@@ -143,7 +143,7 @@ ThreatData.THREAT_COUNTER = {
         "invuln", "dispel_basic", "displacement_far", "displacement_blink",
         "channel_break", "magic_barrier",
     },
-    modifier_pudge_dismember             = {
+    modifier_pudge_dismember_pull             = {
         "invuln", "dispel_basic", "displacement_far", "displacement_perp",
         "displacement_blink", "channel_break", "magic_barrier",
     },
@@ -303,7 +303,7 @@ ThreatData.SAVE_PUSH_DISTANCE = {
 -- typical Dota tether allows ~200 buffer). Keep 875 pending in-game verify.
 ThreatData.THREAT_TETHER_RANGE = {
     modifier_bane_fiends_grip          = 875,
-    modifier_pudge_dismember           = 200,
+    modifier_pudge_dismember_pull           = 200,
     modifier_shadow_shaman_shackles    = 800,    -- HEURISTIC; no real distance-break (verify in-game)
     modifier_razor_static_link         = 800,
     modifier_lion_mana_drain           = 1000,
@@ -324,7 +324,7 @@ ThreatData.THREATS_ON_SELF = {
     modifier_bane_nightmare              = { role = "hard_disable",  save = "eul_or_bkb" },
     modifier_lion_voodoo                 = { role = "hard_disable",  save = "pre_arm" },
     modifier_shadow_shaman_shackles      = { role = "channel_on_me", save = "bkb_or_grenade_source" },
-    modifier_pudge_dismember             = { role = "channel_on_me", save = "bkb_or_grenade_source" },
+    modifier_pudge_dismember_pull             = { role = "channel_on_me", save = "bkb_or_grenade_source" },
     modifier_bane_fiends_grip            = { role = "channel_on_me", save = "bkb_or_grenade_source" },
     modifier_doom_bringer_doom           = { role = "hard_disable",  save = "bkb_or_lotus" },
     modifier_razor_static_link           = { role = "drain",         save = "force_or_pike" },
@@ -433,7 +433,7 @@ ThreatData.LOTUS_WORTHY_INCOMING = {
 ---@type table<string, boolean>
 ThreatData.ENEMY_CHANNEL_MODIFIERS = {
     modifier_bane_fiends_grip              = true,
-    modifier_pudge_dismember               = true,
+    modifier_pudge_dismember_pull               = true,
     modifier_witch_doctor_death_ward       = true,
     modifier_crystal_maiden_freezing_field = true,
     modifier_enigma_black_hole             = true,
@@ -452,7 +452,7 @@ ThreatData.ABILITY_TO_THREAT = {
     bane_nightmare                      = "modifier_bane_nightmare",
     bane_fiends_grip                    = "modifier_bane_fiends_grip",
     bane_brain_sap                      = nil,   -- instant nuke, no incoming-side save
-    pudge_dismember                     = "modifier_pudge_dismember",
+    pudge_dismember                     = "modifier_pudge_dismember_pull",
     pudge_meat_hook                     = "modifier_pudge_meat_hook",
     spirit_breaker_charge_of_darkness   = "modifier_spirit_breaker_charge_of_darkness",
     spirit_breaker_nether_strike        = "modifier_spirit_breaker_nether_strike",  -- (verify) - promoted from nil: blink-strike ult
@@ -623,7 +623,7 @@ ThreatData.RECOMMENDED_SAVES = {
     },
     -- Channel-tethers: prefer cheap displacement, fall through to dispel/invuln.
     -- Blink always works (1200u >> any tether).
-    modifier_pudge_dismember = {
+    modifier_pudge_dismember_pull = {
         "grenade_self", "item_hurricane_pike", "item_force_staff",
         "item_blink", "item_swift_blink", "item_arcane_blink", "item_overwhelming_blink",
         "item_cyclone", "item_wind_waker", "item_manta", "item_disperser",
@@ -833,7 +833,7 @@ ThreatData.THREAT_TIMING = {
     modifier_lina_light_strike_array     = "pre_cast",   -- 0.5s delayed; act in cast point
     modifier_naga_siren_ensnare          = "pre_cast",
     modifier_doom_bringer_doom           = "pre_cast",
-    modifier_pudge_dismember             = "mid_channel",
+    modifier_pudge_dismember_pull             = "mid_channel",
     modifier_shadow_shaman_shackles      = "mid_channel",
     modifier_witch_doctor_death_ward     = "mid_channel",
     modifier_enigma_black_hole           = "mid_channel",
@@ -1043,7 +1043,7 @@ ThreatData.THREAT_CATEGORY = {
     modifier_phantom_assassin_phantom_strike_target = "close_gap",  -- already landed, but the chase profile is gap-close
     modifier_slark_pounce                      = "close_gap",       -- gap-close + leash
     -- Channel on self
-    modifier_pudge_dismember                   = "channel_on_self",
+    modifier_pudge_dismember_pull                   = "channel_on_self",
     modifier_bane_fiends_grip                  = "channel_on_self",
     modifier_shadow_shaman_shackles            = "channel_on_self",
     modifier_witch_doctor_death_ward           = "channel_on_self",
@@ -1113,7 +1113,7 @@ ThreatData.THREAT_SEVERITY = {
     modifier_enigma_black_hole           = "high",  -- 4s AoE channel
     modifier_legion_commander_duel       = "high",
     -- Medium: significant but recoverable
-    modifier_pudge_dismember             = "medium",  -- breakable channel
+    modifier_pudge_dismember_pull             = "medium",  -- breakable channel
     modifier_lion_voodoo                 = "medium",  -- 1.5s hex
     modifier_lina_light_strike_array     = "medium",
     modifier_naga_siren_ensnare          = "medium",
