@@ -1,0 +1,310 @@
+#!/usr/bin/env lua
+-- tools/run_tests.lua — pure-Lua test runner for the toolkit's lib helpers.
+--
+-- Runs unit tests on the lib/ modules that are pure enough to exercise
+-- without a running game. The game-side API is stubbed at the top, so this
+-- runs in a plain Lua interpreter.
+--
+-- Run it from the repo root:   lua tools/run_tests.lua
+
+----------------------------------------------------------------------------
+-- API STUBS — minimal stand-ins so the libs load without a running game
+----------------------------------------------------------------------------
+
+Vector = Vector or function(x, y, z)
+    return { x = x or 0, y = y or 0, z = z or 0 }
+end
+
+NPC = NPC or {}
+NPC.IsIllusion        = function() return false end
+NPC.IsMeepoClone      = function() return false end
+NPC.HasModifier       = function() return false end
+NPC.HasState          = function() return false end
+NPC.GetItem           = function() return nil end
+NPC.GetMana           = function() return 100 end
+NPC.GetStatesDuration = function() return 0 end
+NPC.IsRunning         = function() return false end
+NPC.IsAttacking       = function() return false end
+NPC.GetAttackRange    = function() return 550 end
+NPC.FindRotationAngle = function() return 0 end
+
+Entity = Entity or {}
+Entity.IsNPC        = function() return true end
+Entity.IsAlive      = function() return true end
+Entity.IsSameTeam   = function() return false end
+Entity.IsEntity     = function(e) return type(e) == "table" and e.is_entity == true end
+Entity.GetIndex     = function(e) return e and e.idx or 0 end
+Entity.GetAbsOrigin = function(e) return e and e.pos or { x = 0, y = 0, z = 0 } end
+Entity.GetHealth    = function() return 1000 end
+Entity.GetMaxHealth = function() return 1000 end
+
+Ability = Ability or {}
+Ability.IsReady     = function() return false end
+Ability.GetCooldown = function() return 999 end
+Ability.GetManaCost = function() return 0 end
+Ability.GetLevel    = function() return 0 end
+
+Hero = Hero or {}
+Hero.GetLastVisibleTime = function() return nil end
+
+GlobalVars = GlobalVars or {}
+GlobalVars.GetCurTime = function() return 0 end
+
+Enum = Enum or {}
+Enum.ModifierState = setmetatable({}, { __index = function(_, k) return k end })
+
+-- a tiny CMenuGroup stand-in for the menu lib
+local function stub_menu_group()
+    local g = { _w = {} }
+    local function mk(name) local w = { _name = name,
+        Get = function() return 0 end, IsDown = function() return false end,
+        IsPressed = function() return false end, IsToggled = function() return false end }
+        g._w[name] = w; return w end
+    function g:Find(name) return self._w[name] end
+    function g:Switch(name) return mk(name) end
+    function g:Slider(name) return mk(name) end
+    function g:Bind(name) return mk(name) end
+    function g:Combo(name) return mk(name) end
+    function g:Button(name) return mk(name) end
+    function g:Label(text) return mk(text) end
+    return g
+end
+Menu = Menu or { Create = function() return stub_menu_group() end }
+
+-- let `require("lib.x")` resolve from the repo root
+package.path = "./?.lua;./?/init.lua;" .. package.path
+
+----------------------------------------------------------------------------
+-- TEST FRAMEWORK
+----------------------------------------------------------------------------
+
+local pass, fail = 0, 0
+local fails = {}
+local function it(name, fn)
+    local ok, err = pcall(fn)
+    if ok then pass = pass + 1; print("  pass  " .. name)
+    else fail = fail + 1; print("  FAIL  " .. name)
+        fails[#fails + 1] = { name = name, err = err } end
+end
+local function describe(group, fn) print("[" .. group .. "]"); fn() end
+local function assert_eq(a, b, msg)
+    if a ~= b then error((msg or "expected eq") .. ": got " .. tostring(a)
+        .. ", want " .. tostring(b), 2) end
+end
+local function assert_near(a, b, msg)
+    if type(a) ~= "number" or math.abs(a - b) > 1e-6 then
+        error((msg or "expected near") .. ": got " .. tostring(a)
+            .. ", want " .. tostring(b), 2) end
+end
+local function assert_true(v, msg) if not v then error(msg or "expected true", 2) end end
+local function assert_false(v, msg) if v then error(msg or "expected false", 2) end end
+
+----------------------------------------------------------------------------
+-- threat_data
+----------------------------------------------------------------------------
+
+local TD = require("lib.threat_data")
+
+describe("threat_data — SAVE_KIND integrity", function()
+    it("SAVE_KIND populated", function()
+        local n = 0
+        for _ in pairs(TD.SAVE_KIND) do n = n + 1 end
+        assert_true(n > 10, "fewer than 10 SAVE_KIND entries")
+    end)
+    it("ESCAPE_ITEM_NAMES derived at load", function()
+        assert_true(type(TD.ESCAPE_ITEM_NAMES) == "table", "not a table")
+        assert_true(#TD.ESCAPE_ITEM_NAMES > 0, "empty escape list")
+    end)
+    it("ESCAPE_ITEM_NAMES includes BKB", function()
+        local found = false
+        for i = 1, #TD.ESCAPE_ITEM_NAMES do
+            if TD.ESCAPE_ITEM_NAMES[i] == "item_black_king_bar" then
+                found = true; break end
+        end
+        assert_true(found, "BKB missing from ESCAPE_ITEM_NAMES")
+    end)
+    it("ESCAPE_ITEM_NAMES holds only item_* names", function()
+        for i = 1, #TD.ESCAPE_ITEM_NAMES do
+            local s = TD.ESCAPE_ITEM_NAMES[i]
+            assert_true(s:sub(1, 5) == "item_", "non-item in escape list: " .. s)
+        end
+    end)
+end)
+
+describe("threat_data — SaveCounters", function()
+    it("BKB counters Bane Nightmare (magic_immune)", function()
+        assert_true(TD.SaveCounters("item_black_king_bar", "modifier_bane_nightmare"))
+    end)
+    it("Force Staff does NOT counter Doom", function()
+        assert_false(TD.SaveCounters("item_force_staff", "modifier_doom_bringer_doom"))
+    end)
+    it("Pike counters Pudge hook (displacement_perp)", function()
+        assert_true(TD.SaveCounters("item_hurricane_pike", "modifier_pudge_meat_hook"))
+    end)
+    it("Cyclone does NOT counter Pudge hook in-flight", function()
+        assert_false(TD.SaveCounters("item_cyclone", "modifier_pudge_meat_hook"))
+    end)
+end)
+
+describe("threat_data — SeverityOf", function()
+    it("returns low/medium/high for a known threat", function()
+        local sev = TD.SeverityOf("modifier_bane_nightmare")
+        assert_true(sev == "low" or sev == "medium" or sev == "high",
+            "got severity=" .. tostring(sev))
+    end)
+end)
+
+----------------------------------------------------------------------------
+-- target / timing
+----------------------------------------------------------------------------
+
+local Target = require("lib.target")
+
+describe("target — pure predicates", function()
+    it("NotClone is nil-safe", function() assert_false(Target.NotClone(nil)) end)
+end)
+
+local Timing = require("lib.timing")
+
+describe("timing — EscapeReadiness", function()
+    it("returns 0 for an entity with no items", function()
+        assert_eq(Timing.EscapeReadiness({ idx = 1 }, 2.0), 0)
+    end)
+end)
+
+----------------------------------------------------------------------------
+-- geometry
+----------------------------------------------------------------------------
+
+local G = require("lib.geometry")
+
+describe("geometry — distance and direction", function()
+    it("dist2d is a 3-4-5 triangle", function()
+        assert_eq(G.dist2d(Vector(0, 0, 0), Vector(300, 400, 0)), 500)
+    end)
+    it("within respects the radius", function()
+        assert_true(G.within(Vector(0, 0, 0), Vector(300, 400, 0), 500))
+        assert_false(G.within(Vector(0, 0, 0), Vector(300, 400, 0), 499))
+    end)
+    it("direction is normalized", function()
+        local d = G.direction(Vector(0, 0, 0), Vector(300, 400, 0))
+        assert_near(d.x, 0.6); assert_near(d.y, 0.8)
+    end)
+    it("extend overshoots the endpoint", function()
+        local e = G.extend(Vector(0, 0, 0), Vector(300, 400, 0), 500)
+        assert_near(e.x, 600); assert_near(e.y, 800)
+    end)
+    it("clamp_distance caps the reach", function()
+        local c = G.clamp_distance(Vector(0, 0, 0), Vector(300, 400, 0), 250)
+        assert_near(G.dist2d(Vector(0, 0, 0), c), 250)
+    end)
+end)
+
+describe("geometry — angles and cones", function()
+    it("angle_between a right angle is 90", function()
+        assert_near(G.angle_between(Vector(100, 0, 0), Vector(0, 0, 0),
+                                    Vector(0, 100, 0)), 90)
+    end)
+    it("point_in_cone accepts a point inside", function()
+        assert_true(G.point_in_cone(Vector(0, 0, 0), Vector(1, 0, 0),
+                                    Vector(100, 10, 0), 45, 1000))
+    end)
+    it("point_in_cone rejects a point outside", function()
+        assert_false(G.point_in_cone(Vector(0, 0, 0), Vector(1, 0, 0),
+                                     Vector(0, 100, 0), 20, 1000))
+    end)
+end)
+
+describe("geometry — segments", function()
+    it("dist_to_segment finds the perpendicular", function()
+        assert_near(G.dist_to_segment(Vector(0, 0, 0), Vector(100, 0, 0),
+                                      Vector(50, 30, 0)), 30)
+    end)
+    it("segment_hits_circle detects a clip", function()
+        assert_true(G.segment_hits_circle(Vector(0, 0, 0), Vector(100, 0, 0),
+                                          Vector(50, 20, 0), 25))
+    end)
+end)
+
+----------------------------------------------------------------------------
+-- prediction
+----------------------------------------------------------------------------
+
+local P = require("lib.prediction")
+
+describe("prediction — intercept", function()
+    it("hits a stationary target at distance/speed", function()
+        local aim, t = P.intercept(Vector(0, 0, 0), Vector(1000, 0, 0), 1000,
+                                   { velocity = Vector(0, 0, 0) })
+        assert_true(aim ~= nil, "no aim point")
+        assert_near(t, 1.0)
+    end)
+    it("takes longer against a target moving away", function()
+        local _, t = P.intercept(Vector(0, 0, 0), Vector(1000, 0, 0), 1000,
+                                 { velocity = Vector(500, 0, 0) })
+        assert_true(t and t > 1.0, "expected t > 1.0")
+    end)
+    it("returns nil when the target outruns the projectile", function()
+        local aim = P.intercept(Vector(0, 0, 0), Vector(1000, 0, 0), 300,
+                                { velocity = Vector(500, 0, 0) })
+        assert_true(aim == nil, "expected no solution")
+    end)
+    it("lead projects along velocity", function()
+        local p = P.lead(Vector(0, 0, 0), 2, { velocity = Vector(100, 0, 0) })
+        assert_eq(p.x, 200)
+    end)
+end)
+
+----------------------------------------------------------------------------
+-- log
+----------------------------------------------------------------------------
+
+local log = require("lib.log")
+
+describe("log — levels", function()
+    it("level threshold filters lower levels", function()
+        log.set_level(log.WARN)
+        assert_eq(log.get_level(), log.WARN)
+        log.set_level(log.INFO)            -- restore
+    end)
+    it("tag returns an independent logger", function()
+        local tagged = log.tag("test")
+        assert_true(type(tagged.info) == "function", "tagged logger has no info")
+    end)
+end)
+
+----------------------------------------------------------------------------
+-- menu
+----------------------------------------------------------------------------
+
+local menu = require("lib.menu")
+
+describe("menu — panel builder", function()
+    it("panel returns the same object for the same path", function()
+        local a = menu.panel("T", "S", "T2", "T3", "G")
+        local b = menu.panel("T", "S", "T2", "T3", "G")
+        assert_true(a == b, "panel() should cache by path")
+    end)
+    it("a widget is created once and reused", function()
+        local p = menu.panel("T", "S", "T2", "T3", "G")
+        local w1 = p:switch("Enable", true)
+        local w2 = p:switch("Enable", true)
+        assert_true(w1 == w2, "switch should be idempotent")
+    end)
+end)
+
+----------------------------------------------------------------------------
+-- REPORT
+----------------------------------------------------------------------------
+
+print()
+print(string.format("%d passed, %d failed", pass, fail))
+if fail > 0 then
+    print()
+    for i = 1, #fails do
+        print("FAIL: " .. fails[i].name)
+        print("  " .. tostring(fails[i].err))
+    end
+    os.exit(1)
+end
+os.exit(0)

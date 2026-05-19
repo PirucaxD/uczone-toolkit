@@ -1,0 +1,6 @@
+# local state written by tools/update.py — machine-specific, not shared
+tools/.kv_manifest.json
+
+# python bytecode
+__pycache__/
+*.pyc
