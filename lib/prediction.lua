@@ -75,9 +75,8 @@ function Prediction.lead(target, time_s, opts)
     local p = pos(target)
     if not p then return nil end
     local v = (opts and opts.velocity) or Prediction.velocity(target)
-    return Vector(p.x + (v.x or 0) * time_s,
-                  p.y + (v.y or 0) * time_s,
-                  p.z)
+    -- native Extrapolate(direction, scalar) is exactly position + v * t
+    return p:Extrapolate(v, time_s)
 end
 
 ----------------------------------------------------------------------------
@@ -159,8 +158,7 @@ end
 function Prediction.travel_time(launch, point, speed, cast_delay)
     local c, p = pos(launch), pos(point)
     if not c or not p or not speed or speed <= 0 then return nil end
-    local dx, dy = p.x - c.x, p.y - c.y
-    return (cast_delay or 0) + sqrt(dx * dx + dy * dy) / speed
+    return (cast_delay or 0) + c:Distance2D(p) / speed
 end
 
 return Prediction

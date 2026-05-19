@@ -8,6 +8,11 @@
 ---component is carried through positions but ignored for distance and
 ---angle. Distances are in Hammer units, angles in degrees.
 ---
+---The plain distance/direction calls delegate to the native `Vector`
+---methods, so the heavy math runs in the engine rather than in Lua. What
+---this lib adds on top is the entity-or-Vector argument handling and the
+---parts the native class does not cover: cone tests and segment collision.
+---
 ---Anything handed a bad value returns a sensible default - math.huge for
 ---a distance, nil for a point - instead of crashing, so call sites can
 ---skip the nil-check and just use `... or fallback`.
@@ -51,8 +56,7 @@ end
 function Geometry.dist2d(a, b)
     local pa, pb = Geometry.pos(a), Geometry.pos(b)
     if not pa or not pb then return math.huge end
-    local dx, dy = pa.x - pb.x, pa.y - pb.y
-    return sqrt(dx * dx + dy * dy)
+    return pa:Distance2D(pb)
 end
 
 -- Aliases - same function, different mental model at the call site.
@@ -67,8 +71,7 @@ Geometry.dist_from_to = Geometry.dist2d
 function Geometry.dist2d_sqr(a, b)
     local pa, pb = Geometry.pos(a), Geometry.pos(b)
     if not pa or not pb then return math.huge end
-    local dx, dy = pa.x - pb.x, pa.y - pb.y
-    return dx * dx + dy * dy
+    return pa:DistanceSqr2D(pb)
 end
 
 ---True if `b` is within `range` units of `a` (cheap - squared compare).
@@ -77,7 +80,9 @@ end
 ---@param range number
 ---@return boolean
 function Geometry.within(a, b, range)
-    return Geometry.dist2d_sqr(a, b) <= (range * range)
+    local pa, pb = Geometry.pos(a), Geometry.pos(b)
+    if not pa or not pb then return false end
+    return pa:IsInRange2D(pb, range)
 end
 
 ----------------------------------------------------------------------------
@@ -105,7 +110,7 @@ end
 function Geometry.midpoint(a, b)
     local pa, pb = Geometry.pos(a), Geometry.pos(b)
     if not pa or not pb then return nil end
-    return Vector((pa.x + pb.x) * 0.5, (pa.y + pb.y) * 0.5, pa.z)
+    return pa:Lerp(pb, 0.5)
 end
 
 ---A point `distance` units past `to`, continuing along the from->to line.
@@ -164,12 +169,11 @@ end
 ---@param b userdata|nil
 ---@return number
 function Geometry.angle_between(a, vertex, b)
-    local d1 = Geometry.direction(vertex, a)
-    local d2 = Geometry.direction(vertex, b)
-    if not d1 or not d2 then return 0 end
-    local dot = d1.x * d2.x + d1.y * d2.y
-    if dot > 1 then dot = 1 elseif dot < -1 then dot = -1 end
-    return acos(dot) * DEG
+    local pa, pv, pb = Geometry.pos(a), Geometry.pos(vertex), Geometry.pos(b)
+    if not pa or not pv or not pb then return 0 end
+    -- native AngleBetween2D returns radians; the angle is taken at the
+    -- middle argument, which is our vertex
+    return pa:AngleBetween2D(pv, pb) * DEG
 end
 
 ---True if `point` falls inside the cone with its tip at `apex`, opening

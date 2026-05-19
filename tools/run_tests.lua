@@ -11,8 +11,26 @@
 -- API STUBS - minimal stand-ins so the libs load without a running game
 ----------------------------------------------------------------------------
 
-Vector = Vector or function(x, y, z)
-    return { x = x or 0, y = y or 0, z = z or 0 }
+-- Vector stub carrying the native methods the libs delegate to
+local VEC = {}
+VEC.__index = VEC
+function VEC:Distance2D(o)    local dx, dy = self.x-o.x, self.y-o.y return math.sqrt(dx*dx + dy*dy) end
+function VEC:DistanceSqr2D(o) local dx, dy = self.x-o.x, self.y-o.y return dx*dx + dy*dy end
+function VEC:IsInRange2D(o, r) return self:DistanceSqr2D(o) <= r*r end
+function VEC:Lerp(b, t)       return Vector(self.x+(b.x-self.x)*t, self.y+(b.y-self.y)*t, self.z+(b.z-self.z)*t) end
+function VEC:Extrapolate(d, s) return Vector(self.x + d.x*s, self.y + d.y*s, self.z) end
+function VEC:AngleBetween2D(mid, p3)
+    local a1x, a1y = self.x-mid.x, self.y-mid.y
+    local a2x, a2y = p3.x-mid.x, p3.y-mid.y
+    local l1 = math.sqrt(a1x*a1x + a1y*a1y)
+    local l2 = math.sqrt(a2x*a2x + a2y*a2y)
+    if l1 < 1e-9 or l2 < 1e-9 then return 0 end
+    local d = (a1x*a2x + a1y*a2y) / (l1*l2)
+    if d > 1 then d = 1 elseif d < -1 then d = -1 end
+    return math.acos(d)
+end
+function Vector(x, y, z)
+    return setmetatable({ x = x or 0, y = y or 0, z = z or 0 }, VEC)
 end
 
 NPC = NPC or {}
@@ -34,7 +52,7 @@ Entity.IsAlive      = function() return true end
 Entity.IsSameTeam   = function() return false end
 Entity.IsEntity     = function(e) return type(e) == "table" and e.is_entity == true end
 Entity.GetIndex     = function(e) return e and e.idx or 0 end
-Entity.GetAbsOrigin = function(e) return e and e.pos or { x = 0, y = 0, z = 0 } end
+Entity.GetAbsOrigin = function(e) return e and e.pos or Vector(0, 0, 0) end
 Entity.GetHealth    = function() return 1000 end
 Entity.GetMaxHealth = function() return 1000 end
 
@@ -52,6 +70,13 @@ GlobalVars.GetCurTime = function() return 0 end
 
 Enum = Enum or {}
 Enum.ModifierState = setmetatable({}, { __index = function(_, k) return k end })
+
+-- Logger stub: the native leveled logger that lib/log.lua builds on
+Logger = Logger or function(name)
+    local noop = function() end
+    return { _name = name, debug = noop, info = noop, warning = noop,
+             error = noop, set_level = noop, get_level = function() return 1 end }
+end
 
 -- a tiny CMenuGroup stand-in for the menu lib
 local function stub_menu_group()
