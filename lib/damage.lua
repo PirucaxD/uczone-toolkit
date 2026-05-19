@@ -1,5 +1,5 @@
 ---@meta
----lib/damage.lua — damage feed normalizer.
+---lib/damage.lua - damage feed normalizer.
 ---
 ---Hero brains call `Damage.GetRecentDamage(npc, window)` without caring
 ---whether Stage 2 (typed OnEntityHurt feed) is active or we're polling.
@@ -32,7 +32,7 @@ local frame = function() return GlobalVars.GetFrameCount() end
 
 ---@type table<integer, {entries: DmgEntry[], head: integer, last_hurt_t: number}>
 local buffers = {}        -- keyed by Entity.GetIndex(npc)
-local entity_handle = {}  -- index → CEntity, for IsAlive checks during GC
+local entity_handle = {}  -- index -> CEntity, for IsAlive checks during GC
 
 local function buf_for(npc)
     local idx = Entity.GetIndex(npc)
@@ -56,7 +56,7 @@ local function push(npc, t, source, ability, damage)
     b.entries[b.head] = { time = t, source = source, ability = ability, damage = damage }
 end
 
--- Ring-buffer entries are sparse after stale-removal — index N may be nil
+-- Ring-buffer entries are sparse after stale-removal - index N may be nil
 -- while index N+1 is not. `for i = 1, #b.entries` produces undefined
 -- behaviour on sparse tables (`#` returns *any* boundary), so we iterate
 -- with `pairs` and defensively guard against nil entries. Stale-removal
@@ -135,7 +135,7 @@ end
 -- damage-vs-target calculation
 --
 -- Frame-correct kill / damage math. Each damage instance is mitigated by the
--- target's MATCHING defense, then the results are summed in RAW HP — so a
+-- target's MATCHING defense, then the results are summed in RAW HP - so a
 -- dual- or triple-instance ability (e.g. an ult that deals a magical
 -- instance + a physical instant-attack instance) is added correctly instead
 -- of mixing a magic-resist frame with an armor frame. The classic bug this
@@ -144,11 +144,11 @@ end
 --
 -- `components` is a table of PRE-mitigation damage amounts:
 --     { physical = , magical = , pure = }
--- Any field omitted (or 0) contributes nothing — a hero passes only the
+-- Any field omitted (or 0) contributes nothing - a hero passes only the
 -- instances it actually has.
---   physical → mitigated by armor         (NPC.GetArmorDamageMultiplier)
---   magical  → mitigated by magic resist  (NPC.GetMagicalArmorDamageMultiplier)
---   pure     → unmitigated
+--   physical -> mitigated by armor         (NPC.GetArmorDamageMultiplier)
+--   magical  -> mitigated by magic resist  (NPC.GetMagicalArmorDamageMultiplier)
+--   pure     -> unmitigated
 ----------------------------------------------------------------------------
 
 ---Raw HP a pre-mitigation damage bundle removes from `target`, after the
@@ -176,7 +176,7 @@ function Damage.MitigatedToRawHP(target, components)
 end
 
 ---True when `components` (pre-mitigation) kill `target`. `extra_hp` is any
----additional RAW HP the caller wants treated as survivable — cast-time
+---additional RAW HP the caller wants treated as survivable - cast-time
 ---regen, shields/barriers, active heals, or an overkill safety margin.
 ---@param target userdata
 ---@param components table  { physical?:number, magical?:number, pure?:number }
@@ -195,7 +195,7 @@ end
 ----------------------------------------------------------------------------
 
 -- per-frame dedup so multiple wirings don't double-count the same event
-local last_hurt_seen = {}   -- key → frame
+local last_hurt_seen = {}   -- key -> frame
 local function dedup(key)
     local f = frame()
     if last_hurt_seen[key] == f then return true end
@@ -212,7 +212,7 @@ local function dedup(key)
     return false
 end
 
----OnEntityHurt — Stage 2 typed damage feed.
+---OnEntityHurt - Stage 2 typed damage feed.
 ---@param data {source:userdata|nil, target:userdata|nil, ability:userdata|nil, damage:number}
 function Damage.OnEntityHurt_handler(data)
     if not data or not data.target then return end
@@ -223,7 +223,7 @@ function Damage.OnEntityHurt_handler(data)
         stage2_active = true
         if not first_callback_logged then
             first_callback_logged = true
-            Log.Write("[damage] Stage 2 OnEntityHurt active — typed feed engaged")
+            Log.Write("[damage] Stage 2 OnEntityHurt active - typed feed engaged")
         end
     end
 
@@ -232,7 +232,7 @@ function Damage.OnEntityHurt_handler(data)
     if b then b.last_hurt_t = now() end
 end
 
----OnUpdateEx — fallback polling path. Records hero damage by diffing
+---OnUpdateEx - fallback polling path. Records hero damage by diffing
 ---`Hero.GetLastHurtTime` (framework time base) but pushes entries with
 ---`time = now()` (wall time) so windowing math stays uniform across both
 ---Stage 2 and fallback paths.
@@ -292,22 +292,22 @@ function Damage.OnUpdateEx_handler()
     end
 end
 
----OnEntityDestroy — drop buffer for destroyed entity.
+---OnEntityDestroy - drop buffer for destroyed entity.
 function Damage.OnEntityDestroy_handler(entity)
     if not entity then return end
     Damage.Forget(entity)
 end
 
----OnProjectile — speculative incoming-damage entries (callback-only path,
+---OnProjectile - speculative incoming-damage entries (callback-only path,
 ---spec mentions this for the Stage-2-OFF prediction case). v1 stub: no
 ---speculative push by default to avoid noise; future hero brains can call
 ---`Damage.PushSpeculative` when they want projectile-driven preemption.
 function Damage.OnProjectile_handler(_data) end
 
----OnLinearProjectileCreate — same stance as OnProjectile. Stub for v1.
+---OnLinearProjectileCreate - same stance as OnProjectile. Stub for v1.
 function Damage.OnLinearProjectileCreate_handler(_data) end
 
----OnModifierCreate — DoT estimation hook. v1 stub; integrating DoT estimates
+---OnModifierCreate - DoT estimation hook. v1 stub; integrating DoT estimates
 ---requires hero-side knowledge of which modifiers represent DoT and at what
 ---rate. Tracked as a Tier 2 hook.
 function Damage.OnModifierCreate_handler(_entity, _modifier) end

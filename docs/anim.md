@@ -6,7 +6,7 @@ roles like `gap_close` or `hard_disable`.
 
 ## How it works
 
-1. **Register a map** for a unit — which `GameActivity` (or sequence name)
+1. **Register a map** for a unit - which `GameActivity` (or sequence name)
    means which ability, and what *role* that ability plays.
 2. **Register particles** if an ability is better recognised by its particle
    than its animation.
@@ -25,7 +25,7 @@ Anim.RegisterMap("npc_dota_hero_sven", {
 Anim.Subscribe("hard_disable", function(ev)
     -- ev.caster, ev.ability_name, ev.role, ev.target_self, ev.raw
     if ev.target_self then
-        -- a stun is coming at me — react
+        -- a stun is coming at me - react
     end
 end)
 ```
@@ -34,11 +34,11 @@ end)
 
 | Function | Purpose |
 |----------|---------|
-| `RegisterMap(unit_name, map)` | activity/sequence → `{ability, role, range?}` |
-| `RegisterParticle(path, signature)` | particle path → `{ability, role}` |
+| `RegisterMap(unit_name, map)` | activity/sequence -> `{ability, role, range?}` |
+| `RegisterParticle(path, signature)` | particle path -> `{ability, role}` |
 | `Subscribe(role, fn)` | run `fn(event)` for every event of that role |
 | `Wire(callbacks)` | chain `OnUnitAnimation` + `OnParticleCreate` |
 
 The event passed to a subscriber has `caster`, `target`, `ability_name`,
 `role`, `target_self` (was it aimed at you) and `raw` (the original data).
-Your own hero's animations are never dispatched — you already know your state.
+Your own hero's animations are never dispatched - you already know your state.

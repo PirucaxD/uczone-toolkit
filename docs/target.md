@@ -1,7 +1,7 @@
 # target
 
 A bag of small **predicates** for reasoning about units. There is deliberately
-no `Target.Pick()` — picking a target is per-hero, and the framework's own
+no `Target.Pick()` - picking a target is per-hero, and the framework's own
 target selection covers the default case. You compose these instead.
 
 Every predicate accepts `nil` and returns `false` (or `0` for numeric ones),
@@ -15,7 +15,7 @@ so you never need a nil-check at the call site.
 ## Filtering out fakes
 
 `NotIllusion`, `NotMeepoClone`, `NotClone` (illusion + Meepo + Arc Warden
-double), `NotSummon` (filters spirit bears, spiders, familiars — real heroes
+double), `NotSummon` (filters spirit bears, spiders, familiars - real heroes
 pass).
 
 ## State and protection
@@ -33,15 +33,15 @@ primitives, so they account for charges and break correctly.
 
 ## Escape-item awareness
 
-`HasReadyEscapeItem(e)` — does the target have an off-cooldown invuln / dispel
+`HasReadyEscapeItem(e)` - does the target have an off-cooldown invuln / dispel
 / magic-immune item. `EscapeItemWindowState(e, window)` is the richer version:
 returns `"active"`, `"ready"`, `"soon"`, `"long"` or `"none"` so you can tell
 "they will dispel my combo" from "they have nothing".
 
 ## Kite / chase reads
 
-`IsKitingUs(target, me)` — is the target actively running away from you.
-`IsRightClicking(target, me)` — is it attacking you from inside its range.
+`IsKitingUs(target, me)` - is the target actively running away from you.
+`IsRightClicking(target, me)` - is it attacking you from inside its range.
 
 ```lua
 local Target = require("lib.target")

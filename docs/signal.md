@@ -1,7 +1,7 @@
 # signal
 
 A small message bus for **cross-hero coordination**. If you run brains on
-several heroes at once, they share one Lua state — `signal` lets them publish
+several heroes at once, they share one Lua state - `signal` lets them publish
 intent to each other and look up each other's APIs.
 
 The registry lives on the module table itself. Lua's `require` cache means
@@ -11,7 +11,7 @@ workaround for shared state.)
 
 ## Two things it does
 
-**API registry** — a brain publishes its public surface, others look it up:
+**API registry** - a brain publishes its public surface, others look it up:
 
 ```lua
 local Signal = require("lib.signal")
@@ -22,7 +22,7 @@ local lina = Signal.Get("Lina")
 if lina then lina.request_save(me) end
 ```
 
-**Channels** — publish/subscribe for sparse, intent-level messages:
+**Channels** - publish/subscribe for sparse, intent-level messages:
 
 ```lua
 -- support brain subscribes:
@@ -47,5 +47,5 @@ Signal.Broadcast("save_request", { ally = me })
 | `Clear(channel)` | drop a channel's cached payload (or all if `nil`) |
 
 Subscriber errors are caught and logged, so one bad brain cannot break the
-chain. Use signals for sparse coordination — not as a replacement for
+chain. Use signals for sparse coordination - not as a replacement for
 per-frame polling.

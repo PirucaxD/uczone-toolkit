@@ -1,15 +1,15 @@
 ---@meta
----lib/geometry.lua — 2D position, distance and direction helpers.
+---lib/geometry.lua - 2D position, distance and direction helpers.
 ---
 ---Hero-agnostic and side-effect free. Every function takes entities or
----Vectors explicitly — nothing reads hero state on its own.
+---Vectors explicitly - nothing reads hero state on its own.
 ---
 ---Dota is played on a flat plane, so the math here is 2D: the z (height)
 ---component is carried through positions but ignored for distance and
 ---angle. Distances are in Hammer units, angles in degrees.
 ---
----Anything handed a bad value returns a sensible default — math.huge for
----a distance, nil for a point — instead of crashing, so call sites can
+---Anything handed a bad value returns a sensible default - math.huge for
+---a distance, nil for a point - instead of crashing, so call sites can
 ---skip the nil-check and just use `... or fallback`.
 
 local Geometry = {}
@@ -55,11 +55,11 @@ function Geometry.dist2d(a, b)
     return sqrt(dx * dx + dy * dy)
 end
 
--- Aliases — same function, different mental model at the call site.
+-- Aliases - same function, different mental model at the call site.
 Geometry.dist_between = Geometry.dist2d
 Geometry.dist_from_to = Geometry.dist2d
 
----Squared 2D distance — skip the sqrt when you only need to compare two
+---Squared 2D distance - skip the sqrt when you only need to compare two
 ---distances against each other or against a fixed radius.
 ---@param a userdata|nil
 ---@param b userdata|nil
@@ -71,7 +71,7 @@ function Geometry.dist2d_sqr(a, b)
     return dx * dx + dy * dy
 end
 
----True if `b` is within `range` units of `a` (cheap — squared compare).
+---True if `b` is within `range` units of `a` (cheap - squared compare).
 ---@param a userdata|nil
 ---@param b userdata|nil
 ---@param range number
@@ -108,7 +108,7 @@ function Geometry.midpoint(a, b)
     return Vector((pa.x + pb.x) * 0.5, (pa.y + pb.y) * 0.5, pa.z)
 end
 
----A point `distance` units past `to`, continuing along the from→to line.
+---A point `distance` units past `to`, continuing along the from->to line.
 ---Negative `distance` pulls back toward `from`. Handy for placing a knock-
 ---back cast behind a target, or an over-shoot aim point.
 ---@param from userdata|nil
@@ -157,8 +157,8 @@ end
 -- angles
 ----------------------------------------------------------------------------
 
----The angle in degrees (0–180) at `vertex`, formed by the rays
----vertex→`a` and vertex→`b`. Returns 0 when either ray has no length.
+---The angle in degrees (0-180) at `vertex`, formed by the rays
+---vertex->`a` and vertex->`b`. Returns 0 when either ray has no length.
 ---@param a userdata|nil
 ---@param vertex userdata|nil
 ---@param b userdata|nil
@@ -197,10 +197,10 @@ function Geometry.point_in_cone(apex, aim_dir, point, half_angle_deg, max_range)
 end
 
 ----------------------------------------------------------------------------
--- segments — collision math for line/skillshot reasoning
+-- segments - collision math for line/skillshot reasoning
 ----------------------------------------------------------------------------
 
----The point on segment `a`→`b` closest to `p`. Clamped to the segment, so
+---The point on segment `a`->`b` closest to `p`. Clamped to the segment, so
 ---the result is never past either endpoint.
 ---@param a userdata|nil
 ---@param b userdata|nil
@@ -217,7 +217,7 @@ function Geometry.closest_point_on_segment(a, b, p)
     return Vector(pa.x + abx * t, pa.y + aby * t, pa.z)
 end
 
----Shortest 2D distance from point `p` to segment `a`→`b`.
+---Shortest 2D distance from point `p` to segment `a`->`b`.
 ---@param a userdata|nil
 ---@param b userdata|nil
 ---@param p userdata|nil
@@ -228,8 +228,8 @@ function Geometry.dist_to_segment(a, b, p)
     return Geometry.dist2d(cp, p)
 end
 
----True if the segment `a`→`b` passes within `radius` of `center`. This is
----the test for "does this line/projectile path clip a unit" — feed it the
+---True if the segment `a`->`b` passes within `radius` of `center`. This is
+---the test for "does this line/projectile path clip a unit" - feed it the
 ---unit's position and its bounding-hull radius (plus the projectile width).
 ---@param a userdata|nil
 ---@param b userdata|nil

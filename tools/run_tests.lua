@@ -1,5 +1,5 @@
 #!/usr/bin/env lua
--- tools/run_tests.lua — pure-Lua test runner for the toolkit's lib helpers.
+-- tools/run_tests.lua - pure-Lua test runner for the toolkit's lib helpers.
 --
 -- Runs unit tests on the lib/ modules that are pure enough to exercise
 -- without a running game. The game-side API is stubbed at the top, so this
@@ -8,7 +8,7 @@
 -- Run it from the repo root:   lua tools/run_tests.lua
 
 ----------------------------------------------------------------------------
--- API STUBS — minimal stand-ins so the libs load without a running game
+-- API STUBS - minimal stand-ins so the libs load without a running game
 ----------------------------------------------------------------------------
 
 Vector = Vector or function(x, y, z)
@@ -105,7 +105,7 @@ local function assert_false(v, msg) if v then error(msg or "expected false", 2) 
 
 local TD = require("lib.threat_data")
 
-describe("threat_data — SAVE_KIND integrity", function()
+describe("threat_data - SAVE_KIND integrity", function()
     it("SAVE_KIND populated", function()
         local n = 0
         for _ in pairs(TD.SAVE_KIND) do n = n + 1 end
@@ -131,7 +131,7 @@ describe("threat_data — SAVE_KIND integrity", function()
     end)
 end)
 
-describe("threat_data — SaveCounters", function()
+describe("threat_data - SaveCounters", function()
     it("BKB counters Bane Nightmare (magic_immune)", function()
         assert_true(TD.SaveCounters("item_black_king_bar", "modifier_bane_nightmare"))
     end)
@@ -146,7 +146,7 @@ describe("threat_data — SaveCounters", function()
     end)
 end)
 
-describe("threat_data — SeverityOf", function()
+describe("threat_data - SeverityOf", function()
     it("returns low/medium/high for a known threat", function()
         local sev = TD.SeverityOf("modifier_bane_nightmare")
         assert_true(sev == "low" or sev == "medium" or sev == "high",
@@ -160,13 +160,13 @@ end)
 
 local Target = require("lib.target")
 
-describe("target — pure predicates", function()
+describe("target - pure predicates", function()
     it("NotClone is nil-safe", function() assert_false(Target.NotClone(nil)) end)
 end)
 
 local Timing = require("lib.timing")
 
-describe("timing — EscapeReadiness", function()
+describe("timing - EscapeReadiness", function()
     it("returns 0 for an entity with no items", function()
         assert_eq(Timing.EscapeReadiness({ idx = 1 }, 2.0), 0)
     end)
@@ -178,7 +178,7 @@ end)
 
 local G = require("lib.geometry")
 
-describe("geometry — distance and direction", function()
+describe("geometry - distance and direction", function()
     it("dist2d is a 3-4-5 triangle", function()
         assert_eq(G.dist2d(Vector(0, 0, 0), Vector(300, 400, 0)), 500)
     end)
@@ -200,7 +200,7 @@ describe("geometry — distance and direction", function()
     end)
 end)
 
-describe("geometry — angles and cones", function()
+describe("geometry - angles and cones", function()
     it("angle_between a right angle is 90", function()
         assert_near(G.angle_between(Vector(100, 0, 0), Vector(0, 0, 0),
                                     Vector(0, 100, 0)), 90)
@@ -215,7 +215,7 @@ describe("geometry — angles and cones", function()
     end)
 end)
 
-describe("geometry — segments", function()
+describe("geometry - segments", function()
     it("dist_to_segment finds the perpendicular", function()
         assert_near(G.dist_to_segment(Vector(0, 0, 0), Vector(100, 0, 0),
                                       Vector(50, 30, 0)), 30)
@@ -232,7 +232,7 @@ end)
 
 local P = require("lib.prediction")
 
-describe("prediction — intercept", function()
+describe("prediction - intercept", function()
     it("hits a stationary target at distance/speed", function()
         local aim, t = P.intercept(Vector(0, 0, 0), Vector(1000, 0, 0), 1000,
                                    { velocity = Vector(0, 0, 0) })
@@ -261,7 +261,7 @@ end)
 
 local log = require("lib.log")
 
-describe("log — levels", function()
+describe("log - levels", function()
     it("level threshold filters lower levels", function()
         log.set_level(log.WARN)
         assert_eq(log.get_level(), log.WARN)
@@ -279,7 +279,7 @@ end)
 
 local menu = require("lib.menu")
 
-describe("menu — panel builder", function()
+describe("menu - panel builder", function()
     it("panel returns the same object for the same path", function()
         local a = menu.panel("T", "S", "T2", "T3", "G")
         local b = menu.panel("T", "S", "T2", "T3", "G")

@@ -1,17 +1,17 @@
 ---@meta
----lib/anim.lua — animation→ability map dispatcher.
+---lib/anim.lua - animation->ability map dispatcher.
 ---
 ---Heroes register per-matchup maps (`Anim.RegisterMap`) and particle
 ---signatures (`Anim.RegisterParticle`). OnUnitAnimation / OnParticleCreate
----resolve the casting unit's map → fire `role` events to subscribers.
+---resolve the casting unit's map -> fire `role` events to subscribers.
 ---
 ---Hot-path conventions:
----  • Particle matching uses integer `particleNameIndex` via
+---  - Particle matching uses integer `particleNameIndex` via
 ---    Utils.ResourceIdFromName (string compare is too slow at the OnParticleCreate
 ---    firehose rate).
----  • OnUnitAnimation tries integer activity first, then sequenceName string.
----  • Local hero animations are not dispatched (we know our own state).
----  • Stolen/invoked abilities (Rubick, Invoker) are out of scope for v1 —
+---  - OnUnitAnimation tries integer activity first, then sequenceName string.
+---  - Local hero animations are not dispatched (we know our own state).
+---  - Stolen/invoked abilities (Rubick, Invoker) are out of scope for v1 -
 ---    TODO when the first such hero needs it.
 
 local Anim = {}
@@ -28,19 +28,19 @@ local frame = function() return GlobalVars.GetFrameCount() end
 ---@field role    string  -- gap_close | hard_disable | ult_burst | channel_start | dispel | save
 
 ---@type table<string, table<integer|string, AnimEntry>>
-local maps = {}  -- unit_name → activity_key → entry
+local maps = {}  -- unit_name -> activity_key -> entry
 
 ---@type table<integer, {ability:string, role:string, on_target_field:string|nil}>
-local particles = {}  -- particle_name_index → entry
+local particles = {}  -- particle_name_index -> entry
 
 ---@type table<string, fun(event:table)[]>
-local subscribers = {}  -- role → [callback]
+local subscribers = {}  -- role -> [callback]
 
 -- per-(hero, activity) once-per-pair "unmapped" logging
 local unmapped_logged = {}
 
 -- per-frame dispatch dedup so multi-wire doesn't double-fire subscribers
-local dispatched = {}  -- key → frame
+local dispatched = {}  -- key -> frame
 
 local function dedup(key)
     local f = frame()
@@ -65,7 +65,7 @@ end
 ---Register an animation map for a unit (typically a hero short name like
 ---"npc_dota_hero_slark"). Map keys are either an `Enum.GameActivity` integer
 ---OR a sequence name string. Values are `{ability=, role=}` tables.
----Duplicate registrations merge — later keys overwrite earlier.
+---Duplicate registrations merge - later keys overwrite earlier.
 ---@param unit_name string
 ---@param map table<integer|string, AnimEntry|nil>
 function Anim.RegisterMap(unit_name, map)
@@ -113,7 +113,7 @@ end
 -- Facing threshold for "is the caster aimed at me?" UCZone v2.0 docs declare
 -- NPC.FindRotationAngle's return as plain `number` without specifying
 -- degrees vs radians. The Source-derived engine convention is degrees.
--- Failure mode if the API actually returns radians: |angle| will cap at π
+-- Failure mode if the API actually returns radians: |angle| will cap at pi
 -- (~3.14), so `angle > 30` is never true and the gate degrades to
 -- always-pass. That biases the dispatcher toward firing target_self=true
 -- more often, which over-triggers Layer 2 defenses (cheap) rather than
@@ -209,7 +209,7 @@ function Anim.OnParticleCreate_handler(data)
 
     -- `data.entity` is the cast SOURCE; `data.entityForModifiers`
     -- is who the spell HITS. The prior code aliased `caster` to
-    -- `entityForModifiers or entity` — for an enemy ult particle landing on
+    -- `entityForModifiers or entity` - for an enemy ult particle landing on
     -- your hero, that set ev.caster = your hero (the target), wrong. We give
     -- both fields distinctly so subscribers can pick. `caster` prefers entity (the
     -- source); `target` exposes entityForModifiers explicitly.

@@ -5,17 +5,17 @@ target has moved. This lib answers "where do I aim so the spell and the
 target meet?".
 
 Velocity is read from the engine's real velocity vector (`m_vecVelocity`),
-**not** the move-speed stat — a unit standing still has a non-zero move-speed
+**not** the move-speed stat - a unit standing still has a non-zero move-speed
 stat but zero velocity, and a unit's facing is not always its travel
 direction. If you smooth velocity yourself, pass it via `opts.velocity`.
 
 ## Two cases
 
-**`lead`** — your spell has a fixed, known time-to-land (a ground zone with a
+**`lead`** - your spell has a fixed, known time-to-land (a ground zone with a
 fixed wind-up, a fixed-duration channel). The aim point is just
 `position + velocity * time`.
 
-**`intercept`** — your spell is a projectile with a *speed*, so flight time
+**`intercept`** - your spell is a projectile with a *speed*, so flight time
 depends on how far the aim point ends up being. That is circular, so it is
 solved as a quadratic.
 
@@ -32,7 +32,7 @@ solved as a quadratic.
 `velocity` (override the measured velocity) and `target_pos` (override the
 target's current position).
 
-`intercept` returns `nil` when there is no solution — the target is moving
+`intercept` returns `nil` when there is no solution - the target is moving
 away faster than the projectile can ever catch it.
 
 ## Example

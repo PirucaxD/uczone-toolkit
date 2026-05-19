@@ -7,13 +7,13 @@ order for free.
 
 ## Why route orders through one place
 
-- **Validation** — each order type needs different fields (a target, a
+- **Validation** - each order type needs different fields (a target, a
   position, an ability). `Order.Issue` checks them before dispatch, so a
   malformed order fails fast instead of silently doing nothing.
-- **Duplicate guard** — issuing the same logical order twice in quick
+- **Duplicate guard** - issuing the same logical order twice in quick
   succession is a no-op. Orders carry an identifier `<hero>-<layer>-<intent>`
   and a 2.5s pending registry dedupes by it.
-- **Unlearned-ability trap** — `Ability.IsReady` returns true for an ability
+- **Unlearned-ability trap** - `Ability.IsReady` returns true for an ability
   you have not learned yet. `Order.Issue` also checks the level, so an order
   for a level-0 ability is rejected instead of jamming the registry.
 

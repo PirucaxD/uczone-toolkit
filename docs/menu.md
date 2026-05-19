@@ -39,7 +39,7 @@ under its name. Arguments mirror the framework's `CMenuGroup` methods.
 
 | Method | Returns |
 |--------|---------|
-| `:get(name)` | the widget's value — for switch / slider / combo |
+| `:get(name)` | the widget's value - for switch / slider / combo |
 | `:down(name)` | bool: is this bind's key held down |
 | `:pressed(name)` | bool: was it pressed this frame |
 | `:toggled(name)` | bool: the bind's toggle state |

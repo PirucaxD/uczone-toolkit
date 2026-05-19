@@ -5,7 +5,7 @@ Two jobs: track recent damage taken, and do kill math correctly.
 ## Recent-damage feed
 
 Call `Damage.GetRecentDamage(npc, window)` and you get the damage that unit
-took in the last `window` seconds — without caring how it was measured. The
+took in the last `window` seconds - without caring how it was measured. The
 lib prefers the typed `OnEntityHurt` feed when the framework provides it and
 falls back to polling `Hero.GetLastHurtTime` otherwise.
 
@@ -35,7 +35,7 @@ post-armor physical figure straight into a magic-resist total and your kill
 check is wrong.
 
 `Damage.MitigatedToRawHP(target, components)` and `Damage.Kills(...)` do it
-right. `components` is a table of *pre-mitigation* amounts — any of
+right. `components` is a table of *pre-mitigation* amounts - any of
 `physical`, `magical`, `pure`; omit what you do not have.
 
 ```lua
@@ -46,5 +46,5 @@ local kills, removed, hp = Damage.Kills(enemy, {
 if kills then ... end
 ```
 
-The optional third argument is extra raw HP to treat as survivable — cast-
+The optional third argument is extra raw HP to treat as survivable - cast-
 time regen, a shield, or an overkill safety margin.

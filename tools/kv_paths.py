@@ -15,7 +15,7 @@ If none of those point at a real folder, a helpful error is raised.
 import os
 import sys
 
-# the KV files the generators consume — also used to sanity-check a folder
+# the KV files the generators consume - also used to sanity-check a folder
 KV_FILES = [
     "items.json",
     "neutral_items.json",

@@ -1,11 +1,11 @@
 # save_select
 
 You are about to die and you have several escape items. Which one actually
-saves you? `save_select` answers that — given a threat and the save items you
+saves you? `save_select` answers that - given a threat and the save items you
 hold, it ranks the ones that genuinely counter it and picks the best.
 
 It is pure logic: it classifies and ranks, nothing else. You decide which
-items are available and ready and pass them in. It bridges two data libs —
+items are available and ready and pass them in. It bridges two data libs -
 [threat_data](threat_data.md) for what counters what, and
 [item_data](item_data.md) for save geometry (push distance, cooldown).
 
@@ -13,7 +13,7 @@ items are available and ready and pass them in. It bridges two data libs —
 
 A save can *technically* fire and still not help. Eul on a tether only breaks
 it if the cyclone's displacement clears the tether range from where you are
-standing — too close and it fails. `save_select` scores that geometry in, so
+standing - too close and it fails. `save_select` scores that geometry in, so
 a push-too-short save ranks last instead of being picked.
 
 ## API
@@ -26,7 +26,7 @@ a push-too-short save ranks last instead of being picked.
 | `BestSave(threat_mod, available, ctx)` | the single top pick |
 | `ThreatBrief(threat_mod)` | category / severity / timing / tether range / recommended list |
 
-`available` is the save items you hold — a string array or a hash set. `ctx`
+`available` is the save items you hold - a string array or a hash set. `ctx`
 optionally carries `distance` (you-to-caster units), needed for tether math.
 
 ```lua

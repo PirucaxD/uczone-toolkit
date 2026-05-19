@@ -1,19 +1,19 @@
 # ability_data
 
-Every ability in the game as a static Lua table — per-level damage, cooldown,
+Every ability in the game as a static Lua table - per-level damage, cooldown,
 cast point, cast range, mana, behavior, and the full `AbilityValues`.
 **Generated** from Valve's KV data by `tools/gen_ability_data.py`; re-run the
 generator (or `tools/update.py`) after a patch rather than hand-editing.
 
-Pure data, no API calls. It reports **base** magnitudes — talent, facet and
+Pure data, no API calls. It reports **base** magnitudes - talent, facet and
 Aghanim bonuses are stripped. When you have a live ability handle in-game,
 `Ability.GetDamage` is authoritative (the engine has applied the bonuses);
-this lib is the answer when you do *not* have a handle — an enemy's ability
+this lib is the answer when you do *not* have a handle - an enemy's ability
 you can see but cannot query, planning, tooltips.
 
 ## What it owns
 
-`ABILITIES` — every ability keyed by name, with `id`, `type`, `behavior`,
+`ABILITIES` - every ability keyed by name, with `id`, `type`, `behavior`,
 `active`, `cooldown`, `cast_point`, `cast_range`, `mana`, `damage`,
 `damage_type`, `channel_time`, `duration`, `max_level`, target flags,
 `has_scepter` / `has_shard`, and `values` (the base `AbilityValues`).

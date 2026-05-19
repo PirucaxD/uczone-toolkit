@@ -1,5 +1,5 @@
 ---@meta
----lib/menu.lua — a small builder over Menu.Create / CMenuGroup.
+---lib/menu.lua - a small builder over Menu.Create / CMenuGroup.
 ---
 ---Building a menu by hand means three chores repeated for every widget:
 ---calling `Menu.Create` for the group, holding onto each widget handle in
@@ -7,7 +7,7 @@
 ---reload must not stack a second copy of every widget).
 ---
 ---This wraps that up. You ask a `panel` for a widget by name; it creates it
----the first time and hands back the SAME widget every call after — so a
+---the first time and hands back the SAME widget every call after - so a
 ---reload re-attaches to the existing widgets instead of duplicating them,
 ---and you never have to keep a handle yourself. Read a value back by name
 ---with `:get()`.
@@ -125,7 +125,7 @@ end
 ---@param name string
 ---@param callback fun(widget: userdata)
 ---@param alt_style boolean|nil
----@param width number|nil  0.0–1.0
+---@param width number|nil  0.0-1.0
 ---@return userdata
 function Panel:button(name, callback, alt_style, width)
     local w = existing(self, name)
@@ -156,7 +156,7 @@ function Panel:find(name) return existing(self, name) end
 
 ---Read a widget's value by name. Works for switch / slider / combo (their
 ---`:Get()`), and returns nil for an unknown name. For a key bind use
----`:down` / `:pressed` / `:toggled` instead — a bind's `:Get()` is a key
+---`:down` / `:pressed` / `:toggled` instead - a bind's `:Get()` is a key
 ---code, not an on/off state.
 ---@param name string
 ---@return any

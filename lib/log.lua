@@ -1,7 +1,7 @@
 ---@meta
----lib/log.lua — leveled, throttled logging on top of Log.Write.
+---lib/log.lua - leveled, throttled logging on top of Log.Write.
 ---
----`Log.Write` puts a line in the console and that is it — no levels, no
+---`Log.Write` puts a line in the console and that is it - no levels, no
 ---rate limiting. In a brain that runs every frame, an unguarded log line
 ---becomes thousands of lines a second and drowns out everything useful.
 ---
@@ -9,7 +9,7 @@
 ---  - **levels**    debug / info / warn / error, with a threshold so you
 ---                  can silence the noisy ones without deleting the calls.
 ---  - **throttling** `throttled()` emits at most once per interval, `once()`
----                  emits a single time — for stuff inside a hot loop.
+---                  emits a single time - for stuff inside a hot loop.
 ---  - **tags**      `tag("combo")` gives you a sub-logger that prefixes
 ---                  every line, so you can tell which system spoke.
 ---
@@ -94,7 +94,7 @@ local function emit(level, tag, msg)
 end
 
 ----------------------------------------------------------------------------
--- a logger object — the module itself is the default (untagged) logger
+-- a logger object - the module itself is the default (untagged) logger
 ----------------------------------------------------------------------------
 
 -- Build the four level methods plus throttled/once onto a logger table that

@@ -1,5 +1,5 @@
 ---@meta
----lib/target.lua — composable predicate helpers.
+---lib/target.lua - composable predicate helpers.
 ---
 ---Per project plan: there is no `Target.Pick()`. Heroes compose these
 ---predicates inline because target-picking is per-hero (Tier 3) and
@@ -10,7 +10,7 @@
 ---
 ---Protection helpers use framework primitives (`NPC.IsLinkensProtected`,
 ---`NPC.IsMirrorProtected`, `NPC.HasAegis`, `Humanizer.IsSafeTarget`)
----rather than a hand-rolled `has-item + cooldown` check — the framework
+---rather than a hand-rolled `has-item + cooldown` check - the framework
 ---already knows about charges, break, and edge cases you would miss.
 
 local Target = {}
@@ -192,7 +192,7 @@ end
 ----------------------------------------------------------------------------
 
 ---Will `entity` be invulnerable (or out-of-game) at any point in the next
----`ms` milliseconds? v1 reads state durations only — any currently-active
+---`ms` milliseconds? v1 reads state durations only - any currently-active
 ---invuln state means the answer is yes for any positive window. Cast-window
 ---prediction (self-cast Eul / Manta dispel-into-invuln) is a Tier 2 hook
 ---(`lib/timing.lua`) and not folded in here.
@@ -265,7 +265,7 @@ end
 
 -- Items the target could use to escape a committed ult: invuln, dispel,
 -- magic-immune. derived from threat_data.SAVE_KIND instead
--- of hardcoded — when SAVE_KIND changes (e.g. BKB gained dispel_basic),
+-- of hardcoded - when SAVE_KIND changes (e.g. BKB gained dispel_basic),
 -- this list updates automatically. Picks items whose kinds include any of
 -- {invuln, dispel_basic, reflect_target, magic_immune}.
 local TD = require("lib.threat_data")
@@ -286,19 +286,19 @@ function Target.HasReadyEscapeItem(e)
 end
 
 --- window-aware escape detection. Returns one of:
----  `"active"` — a dispel/immunity buff is currently on the target. R wasted.
----  `"ready"`  — at least one escape item off CD. Likely popped during our cast.
----  `"soon"`   — no escape ready, but at least one comes off CD within
----               `soon_window_s` (default 2.4s — tune to your spell's cast
+---  `"active"` - a dispel/immunity buff is currently on the target. R wasted.
+---  `"ready"`  - at least one escape item off CD. Likely popped during our cast.
+---  `"soon"`   - no escape ready, but at least one comes off CD within
+---               `soon_window_s` (default 2.4s - tune to your spell's cast
 ---               time plus a buffer).
----               Pro behavior: target will pop dispel as R impacts → R wasted.
----  `"long"`   — escape item(s) exist but all on CD beyond the cast window.
----  `"none"`   — target has no escape items at all.
+---               Pro behavior: target will pop dispel as R impacts -> R wasted.
+---  `"long"`   - escape item(s) exist but all on CD beyond the cast window.
+---  `"none"`   - target has no escape items at all.
 ---
 ---Hedges:
 ---  - If target has Refresher Orb / Shard, downgrade `"long"` to `"soon"`
 ---    (Refresher could snap CDs back; defensive assumption).
----  - If target last visible > 3s ago, return `"ready"` (stale fog data ≠
+---  - If target last visible > 3s ago, return `"ready"` (stale fog data is not
 ---    safety; assume worst case, consistent with project fog-data rule).
 ---@param e             userdata|nil
 ---@param soon_window_s number|nil   default 2.4
@@ -340,17 +340,17 @@ function Target.EscapeItemWindowState(e, soon_window_s)
 end
 
 ---Target is actively moving AWAY from `me`. Heuristic: target is running
----AND its facing is in the rough "away from me" hemisphere (angle > 90°).
+---AND its facing is in the rough "away from me" hemisphere (angle > 90 deg).
 ---Used to bias toward grenade-poke / shrap-zone setups (kite punishment).
 ---@param target userdata|nil
 ---@param me userdata|nil
 ---@return boolean
 -- now also velocity-tracks distance from `me` over recent frames.
--- A target who is running orbital-laterally (facing 90° off-axis from me but
+-- A target who is running orbital-laterally (facing 90 deg off-axis from me but
 -- not actually increasing distance) is no longer mis-classified as kiting.
 -- Cache lives on `Target` itself, keyed by entity index.
 -- opportunistic GC + pause-time skew + EntIndex reuse handling.
-local _kite_track = {}  -- idx → { last_dist_sqr, last_t, spawn_t }
+local _kite_track = {}  -- idx -> { last_dist_sqr, last_t, spawn_t }
 local _kite_last_gc = 0
 function Target.IsKitingUs(target, me)
     if not target or not me or not Entity.IsNPC(target) then return false end
@@ -367,7 +367,7 @@ function Target.IsKitingUs(target, me)
     local idx = Entity.GetIndex(target)
     local t_now = GlobalVars.GetCurTime()
     local rec = _kite_track[idx]
-    -- opportunistic GC every 5s — drop entries where last_t is
+    -- opportunistic GC every 5s - drop entries where last_t is
     -- older than 30s (entity dead / fog / index reused for a different
     -- entity since). Cheap pass; runs at most once per 5s of game time.
     if (t_now - _kite_last_gc) > 5.0 then
@@ -376,7 +376,7 @@ function Target.IsKitingUs(target, me)
             if (t_now - r.last_t) > 30 then _kite_track[k] = nil end
         end
     end
-    -- dead-target check — if the entity died and respawned
+    -- dead-target check - if the entity died and respawned
     -- (Source reuses EntIndex), the cached `last_dist_sqr` is stale. Drop
     -- the record when the target shows signs of newness (alive again after
     -- being unseen for > 5s).

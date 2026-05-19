@@ -2,7 +2,7 @@
 
 ## `example_brain.lua`
 
-A small worked example — not a finished brain, a skeleton that shows the
+A small worked example - not a finished brain, a skeleton that shows the
 shape of a script built on the toolkit:
 
 - requiring the libs,
@@ -34,14 +34,14 @@ handlers. This is the single most common wiring mistake.
 
 ## Quick snippets
 
-**Pure data — no setup, just require and read:**
+**Pure data - no setup, just require and read:**
 
 ```lua
 local AD = require("lib.ability_data")
 local cd = AD.Cooldown("sven_storm_bolt", 1)
 ```
 
-**Geometry — entities or Vectors, interchangeably:**
+**Geometry - entities or Vectors, interchangeably:**
 
 ```lua
 local geo = require("lib.geometry")

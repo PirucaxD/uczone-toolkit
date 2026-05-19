@@ -1,8 +1,8 @@
 ---@meta
----lib/npc.lua — generic NPC stat & inventory queries.
+---lib/npc.lua - generic NPC stat & inventory queries.
 ---
 ---Hero-agnostic. Each function takes an npc handle as the first argument.
----Small on purpose — it covers the two checks every brain ends up needing:
+---Small on purpose - it covers the two checks every brain ends up needing:
 ---  - Aghanim's Shard / Scepter ownership
 ---  - item lookup + off-cooldown checks
 ---
@@ -28,7 +28,7 @@ function NPC_lib.has_scepter(npc)
 end
 
 ---Item lookup by name. Defaults to INVENTORY ONLY (the six active slots,
----not backpack/stash) — that is what you almost always want. Pass
+---not backpack/stash) - that is what you almost always want. Pass
 ---`inventory_only = false` to also scan backpack + stash.
 ---@param npc userdata|nil
 ---@param name string

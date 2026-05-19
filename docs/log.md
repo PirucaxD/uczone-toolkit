@@ -1,6 +1,6 @@
 # log
 
-`Log.Write` puts a line in the console and that is it — no levels, no rate
+`Log.Write` puts a line in the console and that is it - no levels, no rate
 limiting. In a brain that runs every frame, one unguarded log line becomes
 thousands of lines a second and buries everything useful.
 
@@ -24,10 +24,10 @@ log.debug("tick", frame_count)
 
 For log calls inside a hot loop:
 
-- `log.throttled(key, interval, level, ...)` — emits at most once per
+- `log.throttled(key, interval, level, ...)` - emits at most once per
   `interval` seconds for that `key`.
-- `log.once(key, level, ...)` — emits a single time, ever.
-- `log.reset(key)` — forget the history for a key (or all keys if `nil`).
+- `log.once(key, level, ...)` - emits a single time, ever.
+- `log.reset(key)` - forget the history for a key (or all keys if `nil`).
 
 ```lua
 -- runs every frame, but only prints once a second

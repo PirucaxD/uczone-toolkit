@@ -1,7 +1,7 @@
 # uczone-toolkit
 
-A set of Lua libraries for writing UCZone hero scripts — the plumbing you'd
-otherwise rewrite (badly) every time you start a new script.
+A set of Lua libraries for writing UCZone hero scripts. It's the plumbing
+you'd otherwise rewrite (badly) every time you start something new.
 
 If you've poked at scripting for this API, you've probably noticed most
 scripts reinvent the same handful of things from scratch: issuing orders,
@@ -11,21 +11,21 @@ This is that code, written once, with the sharp edges already found.
 
 It's aimed at people who are still learning. Every function is documented,
 nil-safe where it can be, and the comments explain *why* a thing is done a
-certain way — not just what it does. If you're new to this, reading the libs
+certain way, not just what it does. If you're new to this, reading the libs
 is half the point.
 
 ## What's inside
 
-Full overview in [docs/](docs/) — one page per lib. The short version:
+Full overview lives in [docs/](docs/), one page per lib. The short version:
 
-**Building blocks** — small, general, drop in anywhere:
+**Building blocks** - small, general, drop in anywhere:
 `geometry` (2D math, cones, segment collision), `prediction` (aim a
 projectile at a moving target), `log` (leveled + throttled logging),
 `menu` (a builder over `Menu.Create`), `npc`, `dedup`, `signal`.
 
-**Event plumbing** — wire once, then forget:
+**Event plumbing** - wire once, then forget:
 `order` (one validated chokepoint for every order you issue), `damage`
-(recent-damage feed + correct kill math), `anim` (enemy animations →
+(recent-damage feed + correct kill math), `anim` (enemy animations ->
 "they just cast X" events).
 
 **Combat reasoning:**
@@ -47,7 +47,7 @@ local Order    = require("lib.order")
 local dist = geometry.dist2d(me, enemy)
 ```
 
-The data libs are pure — just require and read. The event libs need a
+The data libs are pure - just require and read. The event libs need a
 one-line `Wire(callbacks)` at setup. See [examples/](examples/) for the
 wiring pattern; it's the one thing worth getting right early.
 
@@ -76,7 +76,7 @@ lua tools/run_tests.lua
 ## Repo layout
 
 ```
-lib/        the libraries — this is the thing you use
+lib/        the libraries - this is the thing you use
 docs/       one explainer page per lib
 examples/   a worked example script + snippets
 tools/      the data-lib generators, the updater, the test runner
@@ -90,4 +90,4 @@ required.
 
 ## License
 
-MIT — see [LICENSE](LICENSE). Do what you like with it.
+MIT - see [LICENSE](LICENSE). Do what you like with it.

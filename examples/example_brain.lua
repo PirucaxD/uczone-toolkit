@@ -1,11 +1,11 @@
--- example_brain.lua — a tiny worked example of wiring the toolkit together.
+-- example_brain.lua - a tiny worked example of wiring the toolkit together.
 --
 -- This is NOT a finished hero brain. It is a skeleton that shows the shape:
 -- how you require the libs, wire the event ones once at setup, build a menu,
 -- and make a small decision each frame. Read it top to bottom, then go build
 -- the real thing.
 --
--- It is deliberately generic — no specific hero. Drop in your own ability
+-- It is deliberately generic - no specific hero. Drop in your own ability
 -- handles and combat logic where the comments point.
 
 ----------------------------------------------------------------------------
@@ -22,7 +22,7 @@ local menu    = require("lib.menu")
 local log     = require("lib.log").tag("example")
 
 ----------------------------------------------------------------------------
--- 2. menu — create the config widgets once
+-- 2. menu - create the config widgets once
 ----------------------------------------------------------------------------
 
 local cfg = menu.panel("Heroes", "Hero List", "Example", "Brain", "Core")
@@ -45,7 +45,7 @@ Damage.Wire(callbacks)   -- the recent-damage feed
 Anim.Wire(callbacks)
 Anim.Subscribe("hard_disable", function(ev)
     if ev.target_self then
-        log.info("incoming disable from", ev.ability_name, "— react here")
+        log.info("incoming disable from", ev.ability_name, "- react here")
     end
 end)
 
@@ -98,7 +98,7 @@ callbacks.OnUpdateEx = function()
     local aim = predict.intercept(me, target, 1200, { cast_delay = 0.3 })
     if aim and cfg:down("Combo key") then
         -- Order.Issue(... order_type CAST_POSITION, position = aim ...)
-        log.debug("combo key down — would cast at the predicted point")
+        log.debug("combo key down - would cast at the predicted point")
     end
 end
 

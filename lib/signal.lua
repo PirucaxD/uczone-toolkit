@@ -1,11 +1,11 @@
 ---@meta
----lib/signal.lua — cross-hero coordination registry.
+---lib/signal.lua - cross-hero coordination registry.
 ---
 ---Each hero brain that loads calls `Signal.Register(name, api)` to publish
 ---its public surface. Other heroes call `Signal.Get(name)` to look up an
 ---ally hero's brain and call into its API. The registry lives on this
 ---module's table (a Lua module is a singleton across `require` calls in the
----same Lua state) — so all hero scripts that `require("lib.signal")` share
+---same Lua state) - so all hero scripts that `require("lib.signal")` share
 ---the same `_registry`. Note UCZone's sandbox doesn't expose `_G`,
 ---so we cannot store the registry as a true global; the module-singleton
 ---pattern is the workaround.
@@ -30,13 +30,13 @@ local Signal = {}
 -- table (`attempt to index a nil value (global '_G')` at module load).
 -- Cross-hero state lives on the module table itself; Lua's `require` cache
 -- ensures all hero files that `require("lib.signal")` see the same table.
--- This works as long as all heroes share a single Lua state — the standard
+-- This works as long as all heroes share a single Lua state - the standard
 -- UCZone case. If the framework ever isolates hero scripts in separate
 -- states, a different bridge would be needed (e.g., writes through db.json).
 local _registry = {
-    api      = {},   -- name → api-table
-    subs     = {},   -- channel → { tokens → fn }
-    last     = {},   -- channel → last-payload (cache)
+    api      = {},   -- name -> api-table
+    subs     = {},   -- channel -> { tokens -> fn }
+    last     = {},   -- channel -> last-payload (cache)
     next_tok = 0,    -- monotonic counter
 }
 -- Re-export on the module table so callers can introspect if they want.
@@ -59,7 +59,7 @@ function Signal.Get(name)
 end
 
 ---Subscribe to a channel. The callback fires with the payload published
----via Broadcast. Subscribers are scoped to the current Lua state — if the
+---via Broadcast. Subscribers are scoped to the current Lua state - if the
 ---hero file reloads, prior subscriptions are dropped (the calling code is
 ---responsible for re-subscribing on init).
 ---
@@ -69,7 +69,7 @@ end
 ---@return integer token
 -- monotonic global counter, NOT array length. Using `#arr + 1`
 -- on a sparse table (with holes from Unsubscribe) returns the last non-nil
--- index — re-uses an in-use token, silently overwriting a still-live
+-- index - re-uses an in-use token, silently overwriting a still-live
 -- subscriber. The counter avoids reuse forever.
 function Signal.Subscribe(channel, callback)
     local arr = _registry.subs[channel]
@@ -121,7 +121,7 @@ end
 function Signal.Last(channel) return _registry.last[channel] end
 
 ---Drop the cached last-payload for a channel (or all channels if nil).
---- previously `last[channel]` grew forever — large per-tick
+--- previously `last[channel]` grew forever - large per-tick
 ---broadcasts held references to old payloads indefinitely. Hero brains
 ---should call this when shutting down or hot-reloading.
 ---@param channel string|nil

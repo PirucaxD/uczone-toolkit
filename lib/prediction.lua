@@ -1,21 +1,21 @@
 ---@meta
----lib/prediction.lua — projectile-intercept solver.
+---lib/prediction.lua - projectile-intercept solver.
 ---
 ---The hard part of landing any non-instant spell: by the time your
 ---projectile arrives, the target has moved. This module answers "where do
 ---I aim so the projectile and the target meet?".
 ---
 ---Two cases, two functions:
----  - `lead`      — the target keeps a roughly constant velocity and your
+---  - `lead`      - the target keeps a roughly constant velocity and your
 ---                  spell takes a known, fixed time to land (a ground zone
 ---                  with a fixed wind-up, a fixed-duration channel). The
 ---                  intercept is just `position + velocity * time`.
----  - `intercept` — the spell is a projectile with a SPEED, so the flight
+---  - `intercept` - the spell is a projectile with a SPEED, so the flight
 ---                  time depends on how far the aim point ends up being.
 ---                  That is circular, so it is solved as a quadratic.
 ---
 ---Velocity is read from the engine's real velocity vector
----(`m_vecVelocity`), not the move-speed stat — a unit standing still has a
+---(`m_vecVelocity`), not the move-speed stat - a unit standing still has a
 ---non-zero move-speed stat but zero velocity, and a unit's facing is not
 ---always its travel direction. If you smooth velocity yourself (e.g. over
 ---a few frames), pass it in via `opts.velocity` and it is used as-is.
@@ -99,7 +99,7 @@ end
 ---  - `target_pos`  override the target's current position.
 ---
 ---Returns the aim Vector and the total time-to-hit (seconds, measured from
----now). Returns nil when there is no solution — the target is moving away
+---now). Returns nil when there is no solution - the target is moving away
 ---faster than the projectile can catch it.
 ---@param launch userdata|nil   launch point (entity or Vector)
 ---@param target userdata|nil   the moving target

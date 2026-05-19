@@ -1,11 +1,11 @@
 ---@meta
----lib/timing.lua — predictive cast-window math.
+---lib/timing.lua - predictive cast-window math.
 ---
 ---Tier 2 helper for predicting *future* invuln / dispel / out-of-game
 ---states. Replaces `Target.WillBeInvulnIn` v1, which read currently-active
 ---state durations only.
 ---
----**Pure helpers** — no game-state mutation. Callers feed in:
+---**Pure helpers** - no game-state mutation. Callers feed in:
 ---  - The target entity.
 ---  - A look-ahead window in seconds.
 ---Returns one of `"safe"` / `"will_be_invuln"` / `"likely_dispel"` /
@@ -21,11 +21,11 @@ local MS = Enum.ModifierState
 -- removed the empty INFLIGHT_INVULN table + its dead pairs loop
 -- below. Repopulate when in-flight modifier observation is available.
 
--- Items the target may activate this tick to escape. Cooldown ≤ window
--- means "could fire". Maps item internal name to its CAST POINT — we add
+-- Items the target may activate this tick to escape. Cooldown <= window
+-- means "could fire". Maps item internal name to its CAST POINT - we add
 -- this to the cooldown check so we know the order can resolve within the
 -- prediction window. dropped `item_eul_scepter` (not a real
--- internal name in 7.41C — canonical is item_cyclone for the base Eul item).
+-- internal name in 7.41C - canonical is item_cyclone for the base Eul item).
 -- Aeon Disk has `passive = true` so the predictor gates on
 -- target HP being below the 70% trigger threshold instead of treating it
 -- like an active cast (which would always say "yes Aeon will pop").
@@ -40,7 +40,7 @@ local ESCAPE_ACTIVES = {
     item_satanic        = { cast_point = 0.0,  effect = "dispel_basic" },
 }
 
----Currently in an invuln-class state? (Predicts nothing — just reads.)
+---Currently in an invuln-class state? (Predicts nothing - just reads.)
 ---@param entity userdata|nil
 ---@return boolean
 function Timing.IsInvulnNow(entity)
@@ -88,7 +88,7 @@ function Timing.WillBeInvulnIn(entity, window_seconds)
             -- Passive trigger: HP must be below threshold for it to fire.
             if info.passive then
                 if hp_frac > (info.hp_trigger_frac or 0.70) then
-                    -- HP too high — won't trigger this commit. Skip.
+                    -- HP too high - won't trigger this commit. Skip.
                 else
                     local cd = Ability.GetCooldown(it) or 999
                     if cd <= window_seconds then return true, item_name end
@@ -111,8 +111,8 @@ end
 
 ---Probability-style readiness for an escape (not a boolean). Returns 0..1.
 ---0  = no escape items / all on very-long CD.
----0.3 = at least one item within 2× window.
----0.6 = at least one item within 1× window.
+---0.3 = at least one item within 2x window.
+---0.6 = at least one item within 1x window.
 ---1.0 = at least one item ready RIGHT NOW.
 ---@param entity         userdata|nil
 ---@param window_seconds number

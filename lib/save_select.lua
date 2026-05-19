@@ -1,9 +1,9 @@
 ---@meta
----lib/save_select.lua — generic threat-vs-save-item selection.
+---lib/save_select.lua - generic threat-vs-save-item selection.
 ---
 ---Given a threat (the modifier name it lands as) and the save items a hero
 ---currently has available, rank which saves actually counter it and pick the
----best one. Hero-agnostic — it only classifies and ranks, so you can drop it
+---best one. Hero-agnostic - it only classifies and ranks, so you can drop it
 ---into any brain's defensive layer without rewriting your save logic.
 ---
 ---Pure logic: no API calls, no callbacks, no side effects (same discipline as
@@ -12,9 +12,9 @@
 ---classifies and ranks.
 ---
 ---Bridges the two data libs:
----  - `lib/threat_data.lua`  — what counters a threat, tether ranges, the
+---  - `lib/threat_data.lua`  - what counters a threat, tether ranges, the
 ---                             hand-tuned per-threat recommended ordering.
----  - `lib/item_data.lua`    — precise save geometry (push distance, cooldown)
+---  - `lib/item_data.lua`    - precise save geometry (push distance, cooldown)
 ---                             via `SAVE_GEOMETRY`.
 ---
 ---Naming: all save items use canonical `item_*` names (the keys of
@@ -37,7 +37,7 @@ local ItemData   = require("lib.item_data")
 local SaveSelect = {}
 
 ----------------------------------------------------------------------------
--- Scoring weights — heuristic, tune here.
+-- Scoring weights - heuristic, tune here.
 ----------------------------------------------------------------------------
 local W = {
     base             = 100,  -- a save that counters the threat at all
@@ -84,7 +84,7 @@ end
 -- public API
 ----------------------------------------------------------------------------
 
----True if `save_name` genuinely neutralises `threat_mod` — it must counter the
+---True if `save_name` genuinely neutralises `threat_mod` - it must counter the
 ---threat's effect kind AND, for a tether/channel threat, its displacement must
 ---actually be long enough to break the tether from `ctx.distance`.
 ---@param save_name string       canonical item_* save name
@@ -104,7 +104,7 @@ end
 ---Score a single save against a threat. Returns nil when the save does not
 ---counter the threat at all (so it should not be offered). A save that
 ---counters the effect but whose push is too short for a tether scores low
----(negative-weighted) rather than nil — the caller still sees it, ranked last.
+---(negative-weighted) rather than nil - the caller still sees it, ranked last.
 ---@param save_name string
 ---@param threat_mod string
 ---@param ctx table|nil          optional { distance = self-to-caster units }
