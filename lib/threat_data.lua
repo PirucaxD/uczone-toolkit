@@ -1414,4 +1414,14 @@ do
     ThreatData.ESCAPE_ITEM_NAMES = names
 end
 
+-- Pudge Dismember puts TWO modifiers on the victim: modifier_pudge_dismember
+-- and modifier_pudge_dismember_pull (the pull component). Both land, so the
+-- catalog (keyed on the _pull name) must also answer to the bare name.
+-- Mirror every modifier-keyed table entry onto it.
+for _, t in pairs(ThreatData) do
+    if type(t) == "table" and t.modifier_pudge_dismember_pull ~= nil then
+        t.modifier_pudge_dismember = t.modifier_pudge_dismember_pull
+    end
+end
+
 return ThreatData
