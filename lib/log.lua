@@ -88,7 +88,16 @@ end
 ----------------------------------------------------------------------------
 
 local function build(name)
-    local L = {}
+    local L = {
+        -- mirror the level constants so callers that hold only the tagged
+        -- logger can still pass a level to throttled() / once() without
+        -- having to also keep a reference to the module table
+        DEBUG  = M.DEBUG,
+        INFO   = M.INFO,
+        WARN   = M.WARN,
+        ERROR  = M.ERROR,
+        SILENT = M.SILENT,
+    }
     local native = has_native and Logger(name ~= "" and name or "log") or nil
 
     -- one place that level-gates, then hands off to the native logger
