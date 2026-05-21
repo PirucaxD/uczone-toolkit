@@ -6,10 +6,18 @@ cast point, cast range, mana, behavior, and the full `AbilityValues`.
 generator (or `tools/update.py`) after a patch rather than hand-editing.
 
 Pure data, no API calls. It reports **base** magnitudes - talent, facet and
-Aghanim bonuses are stripped. When you have a live ability handle in-game,
-`Ability.GetDamage` is authoritative (the engine has applied the bonuses);
-this lib is the answer when you do *not* have a handle - an enemy's ability
-you can see but cannot query, planning, tooltips.
+Aghanim bonuses are stripped. This lib is the answer when you do *not* have a
+live handle - an enemy's ability you can see but cannot query, planning,
+tooltips.
+
+When you DO have a live handle, do not reach for `Ability.GetDamage`: despite
+the name it is a static read of the KV `AbilityDamage` field and returns `0`
+for any ability that stores its damage in `AbilityValues` instead (most of
+them). For a live, level-aware value use
+`Ability.GetLevelSpecialValueFor(handle, "<key>")` - that one reads
+`AbilityValues` and resolves the current level. So: live handle ->
+`GetLevelSpecialValueFor`; no handle -> this lib's `Damage` / `Value`
+helpers.
 
 ## What it owns
 

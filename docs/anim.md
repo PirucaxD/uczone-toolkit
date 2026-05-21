@@ -42,3 +42,25 @@ end)
 The event passed to a subscriber has `caster`, `target`, `ability_name`,
 `role`, `target_self` (was it aimed at you) and `raw` (the original data).
 Your own hero's animations are never dispatched - you already know your state.
+
+## Picking the right `ACT_DOTA_CAST_ABILITY_N`
+
+The map key is a cast-activity: `ACT_DOTA_CAST_ABILITY_1` through `_6`. The
+number is the unit's **spell-bar slot** - Q is 1, W is 2, E is 3, the
+ultimate is 4 - NOT the raw index of the ability in the hero's KV ability
+list. The two differ: the KV list is padded with `generic_hidden`
+placeholders, innate abilities and hidden sub-abilities, so an ult that
+sits at KV index 6 still casts on `ACT_DOTA_CAST_ABILITY_4`.
+
+You can derive the slot for any hero deterministically from `hero_data` +
+`ability_data`: walk the hero's ability list, skip every entry that is
+`generic_hidden`, innate, hidden / not-learnable, a pure passive, or a
+talent (`ABILITY_TYPE_ATTRIBUTES`). Of what remains, the ultimate is slot 4
+and the first three others are slots 1, 2, 3. A short generator can emit
+every hero's map this way and be re-run after a patch - much better than
+hand-keying activity numbers.
+
+One limit worth knowing: the KV data carries ability names, behaviors and
+values but never `modifier_*` names. Anything keyed on ability names or
+cast-activity slots (like this map) is fully data-derivable; a catalog keyed
+on modifier names is not, and has to be confirmed from in-game observation.
