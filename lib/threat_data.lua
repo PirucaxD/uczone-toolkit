@@ -2,7 +2,7 @@
 ---lib/threat_data.lua - universal threat / save classification data.
 ---
 ---Data-only Tier 2 extraction. The tables and pure helpers in this module
----don't change per hero - Pike's push distance is 500u for everyone, Bane
+---don't change per hero - Pike's push distance is 425u for everyone, Bane
 ---Nightmare is countered by invuln/magic_immune/dispel/reflect regardless
 ---of who's defending against it.
 ---
@@ -34,11 +34,23 @@
 ---if TD.WillTetherBreak("item_hurricane_pike",
 ---                      "modifier_bane_fiends_grip",
 ---                      dist_bane_to_self) then
----    -- Pike's 500u push will break the 875u tether from this distance
+---    -- Pike's 425u push will break the 875u tether from this distance
 ---end
 ---```
 
 local ThreatData = {}
+
+-- item_data.lua's generated SAVE_GEOMETRY table is the single source of
+-- truth for save-item push / blink distances. sg() pulls a numeric field
+-- from it with a patch-stable literal fallback. item_data is a pure data
+-- module that requires nothing back, so there is no cycle and no load-order
+-- risk.
+local ItemData = require("lib.item_data")
+local function sg(name, field, fallback)
+    local g = ItemData.SAVE_GEOMETRY and ItemData.SAVE_GEOMETRY[name]
+    local v = g and g[field]
+    return (type(v) == "number" and v) or fallback
+end
 
 ----------------------------------------------------------------------------
 -- SAVE_KIND - every save item / ability classified by what it does
@@ -263,24 +275,25 @@ ThreatData.THREAT_COUNTER = {
 ---Save key -> push distance in units. Non-displacement saves omitted
 ---(treated as 0 and not constrained by tether geometry).
 ---@type table<string, number>
--- Pike/Force values corrected against Liquipedia 7.41C.
--- Pike-on-enemy push = 425 (was 500). Pike pushes radially outward from
--- caster - both caster and enemy move apart. Pike-on-self push = 600 but
--- direction = your hero's facing (often toward threat). The brain prefers
--- Pike-on-enemy whenever the enemy is in 425u cast range; otherwise falls
--- back to Pike-on-self. The conservative value used here is the enemy-target
--- mode (425) since that's the reliable-direction case used for tether breaks.
--- Force push = 600 (was 500), direction = target's facing.
+-- Pike-on-enemy push = 425. Pike pushes radially outward from the caster -
+-- both caster and enemy move apart. Pike-on-self push = 600 but direction =
+-- the hero's facing. The conservative value used here is the enemy-target
+-- mode (enemy_push) since that is the reliable-direction case for tether
+-- breaks.
+-- The item entries derive from item_data.SAVE_GEOMETRY (the generated table
+-- that grounds SAVE_PUSH_DISTANCE) -- displacement items take enemy_push,
+-- blink items take range. The literal in each sg() call is a patch-stable
+-- fallback only. grenade_self stays literal: it is a hero ability
+-- (npc_abilities KV), not an item, so SAVE_GEOMETRY has no entry for it.
 ThreatData.SAVE_PUSH_DISTANCE = {
-    item_hurricane_pike     = 425,
-    item_force_staff        = 600,
+    item_hurricane_pike     = sg("item_hurricane_pike",     "enemy_push", 425),
+    item_force_staff        = sg("item_force_staff",        "enemy_push", 600),
     grenade_self            = 475,
     -- Blink variants: instant teleport. Always breaks any tether.
-    -- Arcane Blink push corrected from 1200 -> 1400 (Liquipedia 7.41C).
-    item_blink              = 1200,
-    item_swift_blink        = 1200,
-    item_arcane_blink       = 1400,
-    item_overwhelming_blink = 1200,
+    item_blink              = sg("item_blink",              "range", 1200),
+    item_swift_blink        = sg("item_swift_blink",        "range", 1200),
+    item_arcane_blink       = sg("item_arcane_blink",       "range", 1400),
+    item_overwhelming_blink = sg("item_overwhelming_blink", "range", 1200),
 }
 
 ----------------------------------------------------------------------------
