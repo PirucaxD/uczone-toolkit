@@ -126,6 +126,7 @@ end
 function Target.InRange(target, source, range, hull)
     if not target or not source then return false end
     local pos = Entity.GetAbsOrigin(target)
+    if not pos then return false end
     return NPC.IsPositionInRange(source, pos, range, hull or 0)
 end
 
@@ -356,11 +357,15 @@ function Target.IsKitingUs(target, me)
     if not target or not me or not Entity.IsNPC(target) then return false end
     if not NPC.IsRunning(target) then return false end
     local m_pos = Entity.GetAbsOrigin(me)
-    local angle_to_me = math.abs(NPC.FindRotationAngle(target, m_pos))
+    if not m_pos then return false end
+    -- NPC.FindRotationAngle returns RADIANS, not degrees. Compare against a
+    -- radian threshold (or convert via math.deg before comparing to 90).
+    local angle_to_me = math.deg(math.abs(NPC.FindRotationAngle(target, m_pos)))
     if angle_to_me <= 90 then return false end  -- not even facing away
 
     -- Velocity check: is distance from me increasing over the last ~0.25s?
     local t_pos = Entity.GetAbsOrigin(target)
+    if not t_pos then return false end
     local dx = t_pos.x - m_pos.x
     local dy = t_pos.y - m_pos.y
     local cur_d2 = dx*dx + dy*dy
@@ -403,7 +408,12 @@ function Target.IsRightClicking(target, me)
     if not NPC.IsAttacking(target) then return false end
     local t_pos = Entity.GetAbsOrigin(target)
     local m_pos = Entity.GetAbsOrigin(me)
-    local atk_range = NPC.GetAttackRange(target) or 600
+    if not t_pos or not m_pos then return false end
+    -- Include attack-range bonuses (Dragon Lance, Hurricane Pike, talents).
+    -- NPC.GetAttackRange returns the base range; bonus is additive.
+    local base = NPC.GetAttackRange(target) or 600
+    local bonus = (NPC.GetAttackRangeBonus and NPC.GetAttackRangeBonus(target)) or 0
+    local atk_range = base + bonus
     local dx = t_pos.x - m_pos.x
     local dy = t_pos.y - m_pos.y
     return (dx*dx + dy*dy) <= (atk_range + 100) * (atk_range + 100)
