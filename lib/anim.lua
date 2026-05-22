@@ -33,6 +33,9 @@ local maps = {}  -- unit_name -> activity_key -> entry
 ---@type table<integer, {ability:string, role:string, on_target_field:string|nil}>
 local particles = {}  -- particle_name_index -> entry
 
+---@type {substr:string, ability:string, role:string, on_target_field:string|nil}[]
+local particle_patterns = {}  -- substring-name fallback for particles
+
 ---@type table<string, fun(event:table)[]>
 local subscribers = {}  -- role -> [callback]
 
@@ -93,6 +96,25 @@ function Anim.RegisterParticle(particle_path, signature)
     particles[idx] = signature
 end
 
+---Register a particle SUBSTRING pattern - a rot-resistant fallback for
+---OnParticleCreate when the exact resource path is not registered (or a
+---future patch versions the path). `substr` is matched lowercased + plain
+---against the particle's full name; use a stable distinctive ability token
+---(e.g. "black_hole", "chronosphere"). Same signature shape as
+---RegisterParticle. The integer-index path stays the primary fast route;
+---this fallback runs only on a miss, and only for enemy-side particles.
+---@param substr     string
+---@param signature  {ability:string, role:string, on_target_field:string|nil}
+function Anim.RegisterParticlePattern(substr, signature)
+    if type(substr) ~= "string" or substr == "" then return end
+    particle_patterns[#particle_patterns + 1] = {
+        substr  = substr:lower(),
+        ability = signature.ability,
+        role    = signature.role,
+        on_target_field = signature.on_target_field,
+    }
+end
+
 ---Subscribe to a role. Multiple subscribers per role are allowed.
 ---Callback receives `{caster, ability_name, role, raw, target_self}`.
 ---@param role string
@@ -110,14 +132,11 @@ end
 -- internal: target_self computation
 ----------------------------------------------------------------------------
 
--- Facing threshold for "is the caster aimed at me?" UCZone v2.0 docs declare
--- NPC.FindRotationAngle's return as plain `number` without specifying
--- degrees vs radians. The Source-derived engine convention is degrees.
--- Failure mode if the API actually returns radians: |angle| will cap at pi
--- (~3.14), so `angle > 30` is never true and the gate degrades to
--- always-pass. That biases the dispatcher toward firing target_self=true
--- more often, which over-triggers Layer 2 defenses (cheap) rather than
--- under-triggers them (potential death). Acceptable.
+-- Facing threshold for "is the caster aimed at me?" NPC.FindRotationAngle
+-- returns RADIANS (verified empirically: comparing the raw value to a
+-- degree threshold capped |angle| at pi, so `angle > 30` was never true
+-- and the gate degraded to always-pass). math.deg converts before the
+-- 30-degree compare.
 local DEFAULT_ANGLE_DEG = 30
 local DEFAULT_RANGE = 1200
 
@@ -129,8 +148,8 @@ local function compute_target_self(caster, ability_range)
     local me_pos = Entity.GetAbsOrigin(me)
     local range = ability_range or DEFAULT_RANGE
     if not NPC.IsPositionInRange(caster, me_pos, range) then return false end
-    -- facing gate (degrees assumed; see comment above)
-    local angle = math.abs(NPC.FindRotationAngle(caster, me_pos))
+    -- facing gate (FindRotationAngle is radians - math.deg before compare)
+    local angle = math.deg(math.abs(NPC.FindRotationAngle(caster, me_pos)))
     if angle > DEFAULT_ANGLE_DEG then return false end
     return true
 end
@@ -202,10 +221,35 @@ function Anim.OnUnitAnimation_handler(data)
     reap_dispatched()
 end
 
+-- Substring-name fallback for OnParticleCreate. The integer-index lookup is
+-- the primary fast path; this runs only on a miss, only when patterns are
+-- registered, and only for an enemy-side particle (the team gate keeps it
+-- off the bulk of the particle firehose). Matches the particle's full name
+-- - substring-tolerant against a particle-path rename.
+local function match_particle_pattern(data)
+    if #particle_patterns == 0 then return nil end
+    local nm = data.fullName or data.name
+    if type(nm) ~= "string" or nm == "" then return nil end
+    local owner = data.entity or data.entityForModifiers
+    if not owner then return nil end
+    local me = Heroes.GetLocal()
+    if not me or Entity.IsSameTeam(me, owner) then return nil end
+    local low = nm:lower()
+    for i = 1, #particle_patterns do
+        if low:find(particle_patterns[i].substr, 1, true) then
+            return particle_patterns[i]
+        end
+    end
+    return nil
+end
+
 function Anim.OnParticleCreate_handler(data)
     if not data then return end
     local sig = particles[data.particleNameIndex]
-    if not sig then return end
+    if not sig then
+        sig = match_particle_pattern(data)
+        if not sig then return end
+    end
 
     -- `data.entity` is the cast SOURCE; `data.entityForModifiers`
     -- is who the spell HITS. The prior code aliased `caster` to
