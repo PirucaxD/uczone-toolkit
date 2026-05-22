@@ -784,11 +784,11 @@ ThreatData.RECOMMENDED_SAVES = {
     },
     -- Disruptor Kinetic Field. Wall blocks forced movement, blink,
     -- and cyclone displacement. Only knockback (Concussive Grenade) crosses.
-    -- grenade_self preferred over grenade_at_caster - directional push in
-    -- your hero's facing reliably moves him out if the user is aimed outward.
+    -- grenade_at_caster pushes Disruptor, not the trapped hero, so it does
+    -- not free the trapped unit; only grenade_self (directional push from
+    -- the trapped hero's own facing) gets the hero out of the field.
     modifier_disruptor_kinetic_field_remnant = {
         "grenade_self",
-        "grenade_at_caster",
     },
     modifier_treant_overgrowth = {
         "item_black_king_bar", "item_blink", "item_swift_blink",
