@@ -140,7 +140,7 @@ end
 local DEFAULT_ANGLE_DEG = 30
 local DEFAULT_RANGE = 1200
 
-local function compute_target_self(caster, ability_range)
+local function compute_target_self(caster, ability_range, instant_target)
     local me = Heroes.GetLocal()
     if not me or not caster or me == caster then return false end
     if Entity.IsSameTeam(me, caster) then return false end
@@ -148,6 +148,15 @@ local function compute_target_self(caster, ability_range)
     local me_pos = Entity.GetAbsOrigin(me)
     local range = ability_range or DEFAULT_RANGE
     if not NPC.IsPositionInRange(caster, me_pos, range) then return false end
+    -- Unit-target abilities (PA Phantom Strike, Pudge Dismember, OD Astral
+    -- Imprisonment, Primal Beast Pulverize, etc.) select their target by
+    -- REFERENCE, not by aim - the caster does not face the target before
+    -- casting. Per-entry `instant_target = true` skips the facing gate for
+    -- these. Without this flag, correctly degree-gating the facing check
+    -- under-detects unit-target casts entirely. The facing gate still
+    -- applies to aim-based projectile abilities (Pudge Hook, Lina LSA,
+    -- Skywrath bolts) where the caster does face the target.
+    if instant_target then return true end
     -- facing gate (FindRotationAngle is radians - math.deg before compare)
     local angle = math.deg(math.abs(NPC.FindRotationAngle(caster, me_pos)))
     if angle > DEFAULT_ANGLE_DEG then return false end
@@ -203,8 +212,9 @@ function Anim.OnUnitAnimation_handler(data)
     -- thread the entry's `range` field through to compute_target_self
     -- so short-range gap-closers don't fall back to DEFAULT_RANGE=1200 and
     -- false-positive across the map. RegisterMap entries may include
-    -- `range = N` for per-ability gating.
-    local target_self = compute_target_self(caster, entry.range)
+    -- `range = N` for per-ability gating, and optional `instant_target = true`
+    -- for unit-target abilities that skip the facing gate.
+    local target_self = compute_target_self(caster, entry.range, entry.instant_target)
     local event = {
         caster       = caster,
         ability_name = entry.ability,
