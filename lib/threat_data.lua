@@ -235,7 +235,7 @@ ThreatData.THREAT_COUNTER = {
         "displacement_blink", "physical_immune", "damage_block", "damage_return",
     },
     -- Drain channels: tether range, blink always works
-    modifier_razor_static_link           = {
+    modifier_razor_static_link_debuff           = {
         "invuln", "displacement_far", "displacement_blink", "dispel_basic",
     },  -- pierces BKB
     modifier_lion_mana_drain             = {
@@ -329,7 +329,7 @@ ThreatData.THREAT_TETHER_RANGE = {
     modifier_bane_fiends_grip          = 875,
     modifier_pudge_dismember_pull           = 200,
     modifier_shadow_shaman_shackles    = 800,    -- HEURISTIC; no real distance-break (verify in-game)
-    modifier_razor_static_link         = 800,
+    modifier_razor_static_link_debuff         = 800,
     modifier_lion_mana_drain           = 1000,
     modifier_witch_doctor_death_ward   = 650,    -- ward attack range at level 3
     modifier_pugna_life_drain          = 1100,   -- v6.7 (verify): typical channel tether
@@ -361,7 +361,7 @@ ThreatData.THREATS_ON_SELF = {
     modifier_pudge_dismember_pull             = { role = "channel_on_me", save = "bkb_or_grenade_source" },
     modifier_bane_fiends_grip            = { role = "channel_on_me", save = "bkb_or_grenade_source" },
     modifier_doom_bringer_doom           = { role = "hard_disable",  save = "bkb_or_lotus" },
-    modifier_razor_static_link           = { role = "drain",         save = "force_or_pike" },
+    modifier_razor_static_link_debuff           = { role = "drain",         save = "force_or_pike" },
     modifier_ursa_overpower              = { role = "physical_burst",save = "glimmer_or_pike" },
     modifier_legion_commander_duel       = { role = "lockdown",      save = "satanic_or_grenade_self" },
     modifier_axe_berserkers_call         = { role = "taunt",         save = "informational" },
@@ -383,7 +383,7 @@ ThreatData.THREATS_ON_SELF = {
     modifier_pangolier_swashbuckle                  = { role = "gap_close",        save = "pike_or_grenade" },
     modifier_dark_willow_cursed_crown               = { role = "hard_disable",     save = "eul_or_bkb" },
     -- batch 2 -- older-hero kidnaps / gap-closes / catches
-    modifier_faceless_void_chronosphere             = { role = "delayed_aoe",      save = "blink_or_bkb" },
+    modifier_faceless_void_chronosphere_freeze             = { role = "delayed_aoe",      save = "blink_or_bkb" },
     modifier_batrider_flaming_lasso                 = { role = "hard_disable",     save = "bkb_or_eul" },
     modifier_tiny_toss                              = { role = "hard_disable",     save = "eul_or_bkb" },
     modifier_vengefulspirit_nether_swap             = { role = "hard_disable",     save = "bkb_or_eul" },
@@ -437,7 +437,7 @@ ThreatData.THREATS_ON_SELF = {
     modifier_dragon_knight_dragon_tail   = { role = "hard_disable",  save = "eul_or_bkb" },         -- (verify) -- 0.45 cast, 1.7-2.75s stun
     modifier_night_stalker_void          = { role = "hard_disable",  save = "eul_or_bkb" },         -- (verify) -- 0.3 cast, mini-stun + slow (full stun at night)
     modifier_ogre_magi_fireblast         = { role = "hard_disable",  save = "eul_or_bkb" },         -- (verify) -- 0.45 cast, 1.5-2.4s stun
-    modifier_rubick_telekinesis          = { role = "hard_disable",  save = "eul_or_bkb" },         -- (verify) -- 0.1 cast, lift+land stun
+    modifier_rubick_telekinesis_stun          = { role = "hard_disable",  save = "eul_or_bkb" },         -- (verify) -- 0.1 cast, lift+land stun
     modifier_silencer_last_word          = { role = "silence_on_me", save = "bkb_or_dispel" },      -- (verify) -- silence on cast / 4s timer
     modifier_death_prophet_silence       = { role = "silence_on_me", save = "bkb_or_dispel" },      -- (verify) -- point-AOE 5-6s silence
     -- zero-coverage fill batch 2: AOE delayed killers + single-target
@@ -510,6 +510,16 @@ ThreatData.THREATS_ON_SELF = {
     modifier_keeper_of_the_light_will_o_wisp  = { role = "hard_disable", save = "eul_or_bkb" },         -- harvested 2026-05-24: delayed AoE stun ult
     modifier_keeper_of_the_light_radiant_bind = { role = "hard_disable", save = "bkb_or_dispel" },     -- harvested 2026-05-24: anti-ranged-attack disable via facet -- HIGH PRIORITY for the hero
     modifier_legion_commander_intimidate_slow = { role = "kiting_slow",  save = "bkb_or_dispel" },     -- harvested 2026-05-24: newer LC ability slow
+    -- second-match harvest: Faceless Void / Largo / Razor / Rubick
+    modifier_faceless_void_timelock_freeze    = { role = "kiting_slow",  save = "informational" },     -- harvested 2026-05-25: passive proc mini-stun on attack, recoverable
+    modifier_faceless_void_time_dilation_distortion = { role = "kiting_slow", save = "bkb_or_dispel" }, -- harvested 2026-05-25: slow + ability CD stall
+    modifier_largo_frogstomp_debuff           = { role = "hard_disable", save = "eul_or_bkb" },         -- harvested 2026-05-25: POINT-AOE stomp stun
+    modifier_largo_croak_of_genius_debuff     = { role = "kiting_slow",  save = "bkb_or_dispel" },     -- harvested 2026-05-25: damage/debuff
+    modifier_largo_catchy_lick_knockback      = { role = "kiting_slow",  save = "informational" },     -- harvested 2026-05-25: knockback marker
+    modifier_razor_plasma_field_slow          = { role = "kiting_slow",  save = "bkb_or_dispel" },     -- harvested 2026-05-25: Plasma Field ring slow
+    modifier_razor_storm_surge_slow           = { role = "kiting_slow",  save = "informational" },     -- harvested 2026-05-25: ms-trade facet
+    modifier_razor_eye_of_the_storm_armor     = { role = "kiting_slow",  save = "bkb_or_dispel" },     -- harvested 2026-05-25: ult armor reduction
+    modifier_rubick_fade_bolt_debuff          = { role = "kiting_slow",  save = "bkb_or_dispel" },     -- harvested 2026-05-25: damage debuff
     -- v6.7 extrapolation (2026-05-11). Modifier names marked (verify) need
     -- in-game confirmation via :FindAllModifiers() print before relying on.
     modifier_shadow_shaman_voodoo        = { role = "hard_disable",  save = "lotus_or_eul" },           -- (verify) -- Hex
@@ -614,7 +624,7 @@ ThreatData.ABILITY_TO_THREAT = {
     pangolier_swashbuckle               = "modifier_pangolier_swashbuckle",
     dark_willow_cursed_crown            = "modifier_dark_willow_cursed_crown",
     -- batch 2: older-hero kidnaps / gap-closes / catches.
-    faceless_void_chronosphere          = "modifier_faceless_void_chronosphere",
+    faceless_void_chronosphere          = "modifier_faceless_void_chronosphere_freeze",
     batrider_flaming_lasso              = "modifier_batrider_flaming_lasso",
     tiny_toss                           = "modifier_tiny_toss",
     vengefulspirit_nether_swap          = "modifier_vengefulspirit_nether_swap",
@@ -705,7 +715,7 @@ ThreatData.ABILITY_TO_THREAT = {
     night_stalker_void                  = "modifier_night_stalker_void",                 -- (verify) --
     ogre_magi_fireblast                 = "modifier_ogre_magi_fireblast",                -- (verify) --
     ogre_magi_unrefined_fireblast       = "modifier_ogre_magi_fireblast",                -- (verify) -- (shares modifier with fireblast)
-    rubick_telekinesis                  = "modifier_rubick_telekinesis",                 -- (verify) --
+    rubick_telekinesis                  = "modifier_rubick_telekinesis_stun",                 -- (verify) --
     silencer_last_word                  = "modifier_silencer_last_word",                 -- (verify) --
     death_prophet_silence               = "modifier_death_prophet_silence",              -- (verify) --
     -- zero-coverage fill batch 2: AOE delayed killers
@@ -782,6 +792,15 @@ ThreatData.ABILITY_TO_THREAT = {
     keeper_of_the_light_will_o_wisp     = "modifier_keeper_of_the_light_will_o_wisp",     -- harvested 2026-05-24
     keeper_of_the_light_radiant_bind    = "modifier_keeper_of_the_light_radiant_bind",    -- harvested 2026-05-24 (anti-ranged disable)
     legion_commander_press_the_attack   = "modifier_legion_commander_intimidate_slow",    -- harvested 2026-05-24 (verify ability name)
+    -- second-match harvest
+    faceless_void_timelock              = "modifier_faceless_void_timelock_freeze",       -- harvested 2026-05-25 (passive)
+    faceless_void_time_dilation         = "modifier_faceless_void_time_dilation_distortion", -- harvested 2026-05-25
+    largo_frogstomp                     = "modifier_largo_frogstomp_debuff",              -- harvested 2026-05-25 (was nil placeholder in )
+    largo_croak_of_genius               = "modifier_largo_croak_of_genius_debuff",        -- harvested 2026-05-25 (was nil placeholder in )
+    razor_plasma_field                  = "modifier_razor_plasma_field_slow",             -- harvested 2026-05-25
+    razor_storm_surge                   = "modifier_razor_storm_surge_slow",              -- harvested 2026-05-25
+    razor_eye_of_the_storm              = "modifier_razor_eye_of_the_storm_armor",        -- harvested 2026-05-25
+    rubick_fade_bolt                    = "modifier_rubick_fade_bolt_debuff",             -- harvested 2026-05-25
     -- harvest -- anim-route mappings for the threats harvested
     -- into THREATS_ON_SELF this version. Where one ability lands MULTIPLE
     -- modifiers on the victim (PA Stifling Dagger, Viper Nethertoxin
@@ -961,7 +980,7 @@ ThreatData.RECOMMENDED_SAVES = {
         "item_cyclone", "item_crimson_guard", "item_solar_crest",
     },
     -- Drain: pierces BKB
-    modifier_razor_static_link = {
+    modifier_razor_static_link_debuff = {
         "item_cyclone", "item_wind_waker", "item_manta",
         "item_hurricane_pike", "item_force_staff", "item_blink",
     },
@@ -1218,7 +1237,7 @@ ThreatData.THREAT_TIMING = {
     modifier_pangolier_swashbuckle       = "at_impact",
     modifier_dark_willow_cursed_crown    = "pre_cast",
     -- batch 2 -- older-hero kidnaps / gap-closes / catches
-    modifier_faceless_void_chronosphere  = "pre_cast",
+    modifier_faceless_void_chronosphere_freeze  = "pre_cast",
     modifier_batrider_flaming_lasso      = "reactive",
     modifier_tiny_toss                   = "pre_cast",
     modifier_vengefulspirit_nether_swap  = "reactive",
@@ -1268,7 +1287,7 @@ ThreatData.THREAT_TIMING = {
     modifier_pudge_meat_hook             = "at_impact",  -- when hook is in flight
     modifier_slark_pounce                = "at_impact",
     modifier_mirana_arrow                = "at_impact",
-    modifier_razor_static_link           = "reactive",
+    modifier_razor_static_link_debuff           = "reactive",
     modifier_lion_mana_drain             = "reactive",
     modifier_phantom_assassin_phantom_strike_target = "reactive",  -- already blinked
     modifier_ursa_overpower              = "reactive",
@@ -1354,7 +1373,7 @@ ThreatData.THREAT_CATEGORY = {
     modifier_pangolier_swashbuckle             = "close_gap",
     modifier_dark_willow_cursed_crown          = "targeted_disable",
     -- batch 2 -- older-hero kidnaps / gap-closes / catches
-    modifier_faceless_void_chronosphere        = "delayed_aoe",
+    modifier_faceless_void_chronosphere_freeze        = "delayed_aoe",
     modifier_batrider_flaming_lasso            = "targeted_disable",
     modifier_tiny_toss                         = "targeted_disable",
     modifier_vengefulspirit_nether_swap        = "targeted_disable",
@@ -1427,7 +1446,7 @@ ThreatData.THREAT_CATEGORY = {
     -- Physical chase
     modifier_ursa_overpower                    = "physical_chase",
     -- Drain
-    modifier_razor_static_link                 = "drain",
+    modifier_razor_static_link_debuff                 = "drain",
     modifier_lion_mana_drain                   = "drain",
     -- Lockdown
     modifier_legion_commander_duel             = "lockdown",
@@ -1452,7 +1471,7 @@ ThreatData.THREAT_CATEGORY = {
     modifier_dragon_knight_dragon_tail         = "targeted_disable",  --
     modifier_night_stalker_void                = "targeted_disable",  --
     modifier_ogre_magi_fireblast               = "targeted_disable",  --
-    modifier_rubick_telekinesis                = "targeted_disable",  --
+    modifier_rubick_telekinesis_stun                = "targeted_disable",  --
     modifier_silencer_last_word                = "targeted_disable",  -- (silence is a disable)
     modifier_death_prophet_silence             = "targeted_disable",  -- (silence)
     -- zero-coverage fill batch 2
@@ -1518,6 +1537,16 @@ ThreatData.THREAT_CATEGORY = {
     modifier_keeper_of_the_light_will_o_wisp   = "delayed_aoe",       -- (delayed AoE stun ult)
     modifier_keeper_of_the_light_radiant_bind  = "targeted_disable",  -- (anti-ranged disable, critical for the hero)
     modifier_legion_commander_intimidate_slow  = "kiting_slow",       -- (newer LC ability slow)
+    -- second-match harvest
+    modifier_faceless_void_timelock_freeze     = "kiting_slow",       -- (passive mini-stun proc)
+    modifier_faceless_void_time_dilation_distortion = "kiting_slow",  -- (slow + CD stall)
+    modifier_largo_frogstomp_debuff            = "targeted_disable",  -- (stomp stun)
+    modifier_largo_croak_of_genius_debuff      = "kiting_slow",       --
+    modifier_largo_catchy_lick_knockback       = "line_projectile",   -- (knockback marker)
+    modifier_razor_plasma_field_slow           = "kiting_slow",       --
+    modifier_razor_storm_surge_slow            = "kiting_slow",       --
+    modifier_razor_eye_of_the_storm_armor      = "kiting_slow",       -- (armor reduction)
+    modifier_rubick_fade_bolt_debuff           = "kiting_slow",       --
 }
 
 ---@param threat_mod string|nil
@@ -1566,7 +1595,7 @@ ThreatData.THREAT_SEVERITY = {
     modifier_pangolier_swashbuckle       = "medium",
     modifier_dark_willow_cursed_crown    = "medium",
     -- batch 2 -- older-hero kidnaps / gap-closes / catches
-    modifier_faceless_void_chronosphere  = "high",
+    modifier_faceless_void_chronosphere_freeze  = "high",
     modifier_batrider_flaming_lasso      = "high",
     modifier_tiny_toss                   = "medium",
     modifier_vengefulspirit_nether_swap  = "high",
@@ -1620,7 +1649,7 @@ ThreatData.THREAT_SEVERITY = {
     modifier_pudge_meat_hook             = "low",   -- can be dodged with sidestep
     modifier_slark_pounce                = "low",
     modifier_mirana_arrow                = "low",
-    modifier_razor_static_link           = "low",   -- escape-by-running often viable
+    modifier_razor_static_link_debuff           = "low",   -- escape-by-running often viable
     modifier_lion_mana_drain             = "low",
     modifier_ursa_overpower              = "low",
     -- v6.14.1 M4: bumped to medium so the BKB-first RECOMMENDED_SAVES entry
@@ -1648,7 +1677,7 @@ ThreatData.THREAT_SEVERITY = {
     modifier_dragon_knight_dragon_tail   = "medium",  -- 1.7-2.75s stun, recoverable
     modifier_night_stalker_void          = "medium",  -- 1-2.5s stun (longer at night)
     modifier_ogre_magi_fireblast         = "medium",  -- 1.5-2.4s stun
-    modifier_rubick_telekinesis          = "medium",  -- lift+land ~2.5s total disable
+    modifier_rubick_telekinesis_stun          = "medium",  -- lift+land ~2.5s total disable
     modifier_silencer_last_word          = "low",     -- silence -- annoying but not lethal alone
     modifier_death_prophet_silence       = "low",     -- silence AOE -- locks BKB but not lethal alone
     -- zero-coverage fill batch 2
@@ -1707,6 +1736,16 @@ ThreatData.THREAT_SEVERITY = {
     modifier_keeper_of_the_light_will_o_wisp = "high", -- delayed AoE stun ult
     modifier_keeper_of_the_light_radiant_bind = "high", -- anti-ranged disable, anti-the hero
     modifier_legion_commander_intimidate_slow = "low", -- slow proc
+    -- second-match harvest
+    modifier_faceless_void_timelock_freeze     = "low",    -- passive proc
+    modifier_faceless_void_time_dilation_distortion = "medium", -- CD stall + slow
+    modifier_largo_frogstomp_debuff            = "medium", -- stomp stun
+    modifier_largo_croak_of_genius_debuff      = "low",    --
+    modifier_largo_catchy_lick_knockback       = "low",    --
+    modifier_razor_plasma_field_slow           = "low",    --
+    modifier_razor_storm_surge_slow            = "low",    -- ms-trade
+    modifier_razor_eye_of_the_storm_armor      = "low",    -- armor reduction
+    modifier_rubick_fade_bolt_debuff           = "low",    --
 }
 
 ----------------------------------------------------------------------------
