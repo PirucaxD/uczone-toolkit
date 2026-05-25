@@ -397,7 +397,7 @@ ThreatData.THREATS_ON_SELF = {
     modifier_necrolyte_reapers_scythe               = { role = "magic_burst",      save = "bkb_or_lotus" },
     modifier_obsidian_destroyer_sanity_eclipse      = { role = "magic_burst",      save = "bkb_or_lotus" },
     modifier_lich_chain_frost                       = { role = "magic_burst",      save = "bkb_or_lotus" },
-    modifier_skywrath_mage_mystic_flare             = { role = "delayed_aoe",      save = "displacement" },
+    modifier_skywrath_mystic_flare_aura_effect             = { role = "delayed_aoe",      save = "displacement" },
     modifier_mars_gods_rebuke                       = { role = "physical_burst",   save = "glimmer_or_ghost" },
     modifier_snapfire_scatterblast                  = { role = "magic_burst",      save = "bkb_or_displacement" },
     modifier_bloodseeker_rupture                    = { role = "magic_burst",      save = "dispel" },
@@ -491,6 +491,25 @@ ThreatData.THREATS_ON_SELF = {
     modifier_chen_penitence                   = { role = "kiting_slow",  save = "bkb_or_dispel" },     -- (verify) -- slow + damage amp on the hero
     modifier_omniknight_hammer_of_purity      = { role = "kiting_slow",  save = "informational" },     -- (verify) -- autocast purity attack proc, single-target damage
     modifier_largo_catchy_lick                = { role = "kiting_slow",  save = "informational" },     -- (verify) -- Largo lick debuff, single-target proc
+    -- ranked-match harvest: real modifier names verified from
+    -- threat_unrecognized log lines in a 100k-line live match.
+    modifier_tusk_snowball_target             = { role = "hard_disable", save = "eul_or_bkb" },         -- harvested 2026-05-24: root + delivery debuff on the hero after snowball impact
+    modifier_tusk_walrus_punch_air_time       = { role = "hard_disable", save = "eul_or_bkb" },         -- harvested 2026-05-24: knockup stun phase (1.6s+)
+    modifier_tusk_walrus_punch_slow           = { role = "kiting_slow",  save = "bkb_or_dispel" },     -- harvested 2026-05-24: post-punch slow
+    modifier_tusk_tag_team_attack_slow        = { role = "kiting_slow",  save = "informational" },     -- harvested 2026-05-24: passive proc slow on Tusk attacks
+    modifier_tusk_tag_team_slow               = { role = "kiting_slow",  save = "informational" },     -- harvested 2026-05-24: paired-attack slow
+    modifier_tiny_avalanche_stun              = { role = "hard_disable", save = "eul_or_bkb" },         -- harvested 2026-05-24: Avalanche stun (POINT-AOE, 1.5-1.8s)
+    -- (Skywrath Mystic Flare: the bare `modifier_skywrath_mage_mystic_flare`
+    -- entries throughout this file were renamed to the actual harvested
+    -- name `modifier_skywrath_mystic_flare_aura_effect` in . No
+    -- new entry needed -- the existing role/timing/category/severity
+    -- stay as they were under the new key.)
+    modifier_skywrath_mage_concussive_shot_slow = { role = "kiting_slow", save = "informational" },    -- harvested 2026-05-24: Concussive Shot slow proc
+    modifier_keeper_of_the_light_blinding_light = { role = "hard_disable", save = "bkb_or_dispel" },   -- harvested 2026-05-24: miss-chance debuff on the hero (devastating to a right-clicker)
+    modifier_blinding_light_knockback         = { role = "kiting_slow",  save = "informational" },     -- harvested 2026-05-24: knockback marker from Blinding Light
+    modifier_keeper_of_the_light_will_o_wisp  = { role = "hard_disable", save = "eul_or_bkb" },         -- harvested 2026-05-24: delayed AoE stun ult
+    modifier_keeper_of_the_light_radiant_bind = { role = "hard_disable", save = "bkb_or_dispel" },     -- harvested 2026-05-24: anti-ranged-attack disable via facet -- HIGH PRIORITY for the hero
+    modifier_legion_commander_intimidate_slow = { role = "kiting_slow",  save = "bkb_or_dispel" },     -- harvested 2026-05-24: newer LC ability slow
     -- v6.7 extrapolation (2026-05-11). Modifier names marked (verify) need
     -- in-game confirmation via :FindAllModifiers() print before relying on.
     modifier_shadow_shaman_voodoo        = { role = "hard_disable",  save = "lotus_or_eul" },           -- (verify) -- Hex
@@ -610,7 +629,7 @@ ThreatData.ABILITY_TO_THREAT = {
     necrolyte_reapers_scythe            = "modifier_necrolyte_reapers_scythe",
     obsidian_destroyer_sanity_eclipse   = "modifier_obsidian_destroyer_sanity_eclipse",
     lich_chain_frost                    = "modifier_lich_chain_frost",
-    skywrath_mage_mystic_flare          = "modifier_skywrath_mage_mystic_flare",
+    skywrath_mage_mystic_flare          = "modifier_skywrath_mystic_flare_aura_effect",
     mars_gods_rebuke                    = "modifier_mars_gods_rebuke",
     snapfire_scatterblast               = "modifier_snapfire_scatterblast",
     bloodseeker_rupture                 = "modifier_bloodseeker_rupture",
@@ -754,6 +773,15 @@ ThreatData.ABILITY_TO_THREAT = {
     largo_catchy_lick                   = "modifier_largo_catchy_lick",                   -- (verify) --
     largo_frogstomp                     = nil,                                            -- POINT-AOE stomp; modifier name unverified
     largo_croak_of_genius               = nil,                                            -- UNIT_TARGET debuff; modifier name unverified
+    -- ranked-match harvest
+    tusk_walrus_punch                   = "modifier_tusk_walrus_punch_air_time",          -- harvested 2026-05-24
+    tusk_tag_team                       = "modifier_tusk_tag_team_attack_slow",           -- harvested 2026-05-24 (passive proc)
+    tiny_avalanche                      = "modifier_tiny_avalanche_stun",                 -- harvested 2026-05-24
+    skywrath_mage_concussive_shot       = "modifier_skywrath_mage_concussive_shot_slow",  -- harvested 2026-05-24
+    keeper_of_the_light_blinding_light  = "modifier_keeper_of_the_light_blinding_light",  -- harvested 2026-05-24
+    keeper_of_the_light_will_o_wisp     = "modifier_keeper_of_the_light_will_o_wisp",     -- harvested 2026-05-24
+    keeper_of_the_light_radiant_bind    = "modifier_keeper_of_the_light_radiant_bind",    -- harvested 2026-05-24 (anti-ranged disable)
+    legion_commander_press_the_attack   = "modifier_legion_commander_intimidate_slow",    -- harvested 2026-05-24 (verify ability name)
     -- harvest -- anim-route mappings for the threats harvested
     -- into THREATS_ON_SELF this version. Where one ability lands MULTIPLE
     -- modifiers on the victim (PA Stifling Dagger, Viper Nethertoxin
@@ -1204,7 +1232,7 @@ ThreatData.THREAT_TIMING = {
     modifier_necrolyte_reapers_scythe               = "pre_cast",
     modifier_obsidian_destroyer_sanity_eclipse      = "pre_cast",
     modifier_lich_chain_frost                       = "pre_cast",
-    modifier_skywrath_mage_mystic_flare             = "pre_cast",
+    modifier_skywrath_mystic_flare_aura_effect             = "pre_cast",
     modifier_mars_gods_rebuke                       = "pre_cast",
     modifier_snapfire_scatterblast                  = "pre_cast",
     modifier_bloodseeker_rupture                    = "pre_cast",
@@ -1340,7 +1368,7 @@ ThreatData.THREAT_CATEGORY = {
     modifier_necrolyte_reapers_scythe               = "targeted_burst",
     modifier_obsidian_destroyer_sanity_eclipse      = "targeted_burst",
     modifier_lich_chain_frost                       = "targeted_burst",
-    modifier_skywrath_mage_mystic_flare             = "delayed_aoe",
+    modifier_skywrath_mystic_flare_aura_effect             = "delayed_aoe",
     modifier_mars_gods_rebuke                       = "targeted_burst",
     modifier_snapfire_scatterblast                  = "targeted_burst",
     modifier_bloodseeker_rupture                    = "targeted_burst",
@@ -1477,6 +1505,19 @@ ThreatData.THREAT_CATEGORY = {
     modifier_chen_penitence                    = "kiting_slow",       -- (slow + dmg amp)
     modifier_omniknight_hammer_of_purity       = "kiting_slow",       -- (autocast nuke)
     modifier_largo_catchy_lick                 = "kiting_slow",       -- (Largo lick debuff)
+    -- ranked-match harvest
+    modifier_tusk_snowball_target              = "targeted_disable",  -- (root + delivery debuff)
+    modifier_tusk_walrus_punch_air_time        = "targeted_disable",  -- (knockup stun)
+    modifier_tusk_walrus_punch_slow            = "kiting_slow",       -- (post-punch slow)
+    modifier_tusk_tag_team_attack_slow         = "kiting_slow",       -- (passive proc slow)
+    modifier_tusk_tag_team_slow                = "kiting_slow",       -- (paired-attack slow)
+    modifier_tiny_avalanche_stun               = "targeted_disable",  -- (POINT-AOE stun)
+    modifier_skywrath_mage_concussive_shot_slow = "kiting_slow",      -- (slow proc)
+    modifier_keeper_of_the_light_blinding_light = "targeted_disable", -- (miss chance)
+    modifier_blinding_light_knockback          = "line_projectile",   -- (knockback marker)
+    modifier_keeper_of_the_light_will_o_wisp   = "delayed_aoe",       -- (delayed AoE stun ult)
+    modifier_keeper_of_the_light_radiant_bind  = "targeted_disable",  -- (anti-ranged disable, critical for the hero)
+    modifier_legion_commander_intimidate_slow  = "kiting_slow",       -- (newer LC ability slow)
 }
 
 ---@param threat_mod string|nil
@@ -1539,7 +1580,7 @@ ThreatData.THREAT_SEVERITY = {
     modifier_necrolyte_reapers_scythe               = "high",
     modifier_obsidian_destroyer_sanity_eclipse      = "high",
     modifier_lich_chain_frost                       = "high",
-    modifier_skywrath_mage_mystic_flare             = "high",
+    modifier_skywrath_mystic_flare_aura_effect             = "high",
     modifier_mars_gods_rebuke                       = "medium",
     modifier_snapfire_scatterblast                  = "medium",
     modifier_bloodseeker_rupture                    = "high",
@@ -1653,6 +1694,19 @@ ThreatData.THREAT_SEVERITY = {
     modifier_chen_penitence                = "low",  -- slow + dmg amp, dispellable
     modifier_omniknight_hammer_of_purity   = "low",  -- autocast nuke proc
     modifier_largo_catchy_lick             = "low",  -- lick debuff
+    -- ranked-match harvest
+    modifier_tusk_snowball_target          = "medium", -- root + setup
+    modifier_tusk_walrus_punch_air_time    = "high",   -- long knockup, kill setup
+    modifier_tusk_walrus_punch_slow        = "low",    -- post-punch slow
+    modifier_tusk_tag_team_attack_slow     = "low",    -- passive proc
+    modifier_tusk_tag_team_slow            = "low",    --
+    modifier_tiny_avalanche_stun           = "medium", -- 1.5-1.8s stun
+    modifier_skywrath_mage_concussive_shot_slow = "low",  -- slow proc
+    modifier_keeper_of_the_light_blinding_light = "high", -- miss chance destroys the hero right-clicks
+    modifier_blinding_light_knockback      = "low",    -- informational
+    modifier_keeper_of_the_light_will_o_wisp = "high", -- delayed AoE stun ult
+    modifier_keeper_of_the_light_radiant_bind = "high", -- anti-ranged disable, anti-the hero
+    modifier_legion_commander_intimidate_slow = "low", -- slow proc
 }
 
 ----------------------------------------------------------------------------
