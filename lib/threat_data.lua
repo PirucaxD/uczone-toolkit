@@ -252,7 +252,7 @@ ThreatData.THREAT_COUNTER = {
     modifier_zuus_thundergods_wrath      = { "invuln", "magic_immune", "magic_barrier" },  -- global AoE; no reflect (not single-target)
     modifier_tidehunter_ravage           = { "invuln", "magic_immune", "displacement_blink", "magic_barrier", "dispel_basic" },
     modifier_earthshaker_echo_slam       = { "invuln", "magic_immune", "displacement_far", "displacement_perp", "displacement_blink", "magic_barrier" },
-    modifier_magnataur_reverse_polarity  = { "invuln", "magic_immune", "displacement_blink" },  -- 1700u radius; only blink reliably escapes
+    modifier_magnataur_reverse_polarity_stun  = { "invuln", "magic_immune", "displacement_blink" },  -- 1700u radius; only blink reliably escapes
     modifier_disruptor_static_storm_thinker = { "magic_immune", "displacement_far", "displacement_perp", "displacement_blink", "magic_barrier" },
     modifier_treant_overgrowth           = { "invuln", "magic_immune", "displacement_blink", "dispel_basic" },
     modifier_magnataur_skewer            = { "invuln", "displacement_perp", "displacement_blink", "magic_immune" },
@@ -399,7 +399,7 @@ ThreatData.THREATS_ON_SELF = {
     modifier_lich_chain_frost                       = { role = "magic_burst",      save = "bkb_or_lotus" },
     modifier_skywrath_mystic_flare_aura_effect             = { role = "delayed_aoe",      save = "displacement" },
     modifier_mars_gods_rebuke                       = { role = "physical_burst",   save = "glimmer_or_ghost" },
-    modifier_snapfire_scatterblast                  = { role = "magic_burst",      save = "bkb_or_displacement" },
+    modifier_snapfire_scatterblast_slow                  = { role = "magic_burst",      save = "bkb_or_displacement" },
     modifier_bloodseeker_rupture                    = { role = "magic_burst",      save = "dispel" },
     modifier_obsidian_destroyer_astral_imprisonment = { role = "hard_disable",     save = "eul_or_bkb" },
     modifier_skywrath_mage_ancient_seal             = { role = "hard_disable",     save = "eul_or_bkb" },
@@ -443,8 +443,8 @@ ThreatData.THREATS_ON_SELF = {
     -- zero-coverage fill batch 2: AOE delayed killers + single-target
     -- bursts the hero actually faces. Anim-path detection is primary for abilities
     -- without a the hero-side modifier (Mana Void, Sunder).
-    modifier_ancient_apparition_cold_feet     = { role = "hard_disable", save = "eul_or_bkb" },        -- (verify) -- 4s timer, stun if the hero hasn't moved 715u
-    modifier_ancient_apparition_ice_blast     = { role = "magic_burst",  save = "bkb_or_lotus" },      -- (verify) -- frost mark, executes <12% HP. BKB blocks (SPELL_IMMUNITY_ENEMIES_YES)
+    modifier_cold_feet     = { role = "hard_disable", save = "eul_or_bkb" },        -- (verify) -- 4s timer, stun if the hero hasn't moved 715u
+    modifier_ice_blast     = { role = "magic_burst",  save = "bkb_or_lotus" },      -- (verify) -- frost mark, executes <12% HP. BKB blocks (SPELL_IMMUNITY_ENEMIES_YES)
     modifier_gyrocopter_homing_missile        = { role = "line_projectile", save = "perp_displacement" },  -- (verify) -- homing target debuff, missile is dodgeable
     modifier_gyrocopter_call_down_slow        = { role = "kiting_slow",  save = "informational" },     -- (verify) -- per-rocket slow proc
     modifier_kunkka_torrent_thinker           = { role = "delayed_aoe",  save = "displacement" },      -- (verify) -- geyser warning placed, hits ~1.5s later
@@ -520,6 +520,20 @@ ThreatData.THREATS_ON_SELF = {
     modifier_razor_storm_surge_slow           = { role = "kiting_slow",  save = "informational" },     -- harvested 2026-05-25: ms-trade facet
     modifier_razor_eye_of_the_storm_armor     = { role = "kiting_slow",  save = "bkb_or_dispel" },     -- harvested 2026-05-25: ult armor reduction
     modifier_rubick_fade_bolt_debuff          = { role = "kiting_slow",  save = "bkb_or_dispel" },     -- harvested 2026-05-25: damage debuff
+    -- third-match harvest: AA / Magnus / Snapfire / Spectre / WD
+    modifier_ancientapparition_coldfeet_freeze = { role = "hard_disable", save = "bkb_or_dispel" },    -- harvested 2026-05-25: AA Cold Feet freeze phase (hero prefix written ancientapparition with no underscore!)
+    modifier_ancient_apparition_bone_chill_debuff = { role = "kiting_slow", save = "bkb_or_dispel" }, -- harvested 2026-05-25: AA Bone Chill stacking slow
+    modifier_chilling_touch_slow              = { role = "kiting_slow",  save = "informational" },     -- harvested 2026-05-25: AA Chilling Touch attack slow proc (no hero prefix!)
+    modifier_chilling_touch_super_slow        = { role = "kiting_slow",  save = "bkb_or_dispel" },     -- harvested 2026-05-25: AA Chilling Touch upgraded variant
+    modifier_ice_vortex                       = { role = "kiting_slow",  save = "informational" },     -- harvested 2026-05-25: AA Ice Vortex slow (no hero prefix!)
+    modifier_magnataur_skewer_impact          = { role = "hard_disable", save = "eul_or_bkb" },         -- harvested 2026-05-25: Skewer impact stun
+    modifier_magnataur_skewer_slow            = { role = "kiting_slow",  save = "bkb_or_dispel" },     -- harvested 2026-05-25: Skewer post-impact slow
+    modifier_magnataur_shockwave_pull         = { role = "hard_disable", save = "bkb_or_dispel" },     -- harvested 2026-05-25: Shockwave pull-back (newer ability?)
+    modifier_snapfire_lil_shredder_debuff     = { role = "kiting_slow",  save = "informational" },     -- harvested 2026-05-25: Lil' Shredder attack-replacement debuff
+    modifier_snapfire_magma_burn_slow         = { role = "kiting_slow",  save = "informational" },     -- harvested 2026-05-25: Magma burn slow proc
+    modifier_spectre_spectral_dagger_in_path  = { role = "kiting_slow",  save = "bkb_or_dispel" },     -- harvested 2026-05-25: Spectre in-path-of-dagger chase marker
+    modifier_maledict                         = { role = "kiting_slow",  save = "bkb_or_dispel" },     -- harvested 2026-05-25: WD Maledict mark (no hero prefix!)
+    modifier_maledict_dot                     = { role = "kiting_slow",  save = "bkb_or_dispel" },     -- harvested 2026-05-25: WD Maledict periodic damage tick
     -- v6.7 extrapolation (2026-05-11). Modifier names marked (verify) need
     -- in-game confirmation via :FindAllModifiers() print before relying on.
     modifier_shadow_shaman_voodoo        = { role = "hard_disable",  save = "lotus_or_eul" },           -- (verify) -- Hex
@@ -527,7 +541,7 @@ ThreatData.THREATS_ON_SELF = {
     modifier_zuus_thundergods_wrath      = { role = "magic_burst",   save = "bkb_or_pipe" },           -- (verify) -- global ult, 2s cast point
     modifier_tidehunter_ravage           = { role = "delayed_aoe",   save = "bkb_or_blink" },          -- (verify)
     modifier_earthshaker_echo_slam       = { role = "delayed_aoe",   save = "bkb_or_blink" },          -- (verify)
-    modifier_magnataur_reverse_polarity  = { role = "delayed_aoe",   save = "bkb_or_blink" },          -- (verify) -- 1700u radius
+    modifier_magnataur_reverse_polarity_stun  = { role = "delayed_aoe",   save = "bkb_or_blink" },          -- (verify) -- 1700u radius
     modifier_disruptor_static_storm_thinker = { role = "delayed_aoe", save = "displacement_or_bkb" },  -- (verify) -- channel
     modifier_treant_overgrowth           = { role = "delayed_aoe",   save = "blink_or_manta" },        -- (verify) -- AoE root
     modifier_magnataur_skewer            = { role = "line_projectile", save = "perp_displacement" },   -- (verify) -- pre_cast save
@@ -641,7 +655,7 @@ ThreatData.ABILITY_TO_THREAT = {
     lich_chain_frost                    = "modifier_lich_chain_frost",
     skywrath_mage_mystic_flare          = "modifier_skywrath_mystic_flare_aura_effect",
     mars_gods_rebuke                    = "modifier_mars_gods_rebuke",
-    snapfire_scatterblast               = "modifier_snapfire_scatterblast",
+    snapfire_scatterblast               = "modifier_snapfire_scatterblast_slow",
     bloodseeker_rupture                 = "modifier_bloodseeker_rupture",
     obsidian_destroyer_astral_imprisonment = "modifier_obsidian_destroyer_astral_imprisonment",
     skywrath_mage_ancient_seal          = "modifier_skywrath_mage_ancient_seal",
@@ -696,7 +710,7 @@ ThreatData.ABILITY_TO_THREAT = {
     antimage_blink                      = nil,   -- mobility only
     queenofpain_blink                   = nil,   -- mobility only
     magnataur_skewer                    = "modifier_magnataur_skewer",                 -- (verify)
-    magnataur_reverse_polarity          = "modifier_magnataur_reverse_polarity",       -- (verify)
+    magnataur_reverse_polarity          = "modifier_magnataur_reverse_polarity_stun",       -- (verify)
     earth_spirit_rolling_boulder        = "modifier_earth_spirit_rolling_boulder",     -- (verify)
     sven_storm_bolt                     = "modifier_sven_storm_bolt",                  -- (verify)
     shadow_shaman_voodoo                = "modifier_shadow_shaman_voodoo",             -- (verify) -- Hex
@@ -719,8 +733,8 @@ ThreatData.ABILITY_TO_THREAT = {
     silencer_last_word                  = "modifier_silencer_last_word",                 -- (verify) --
     death_prophet_silence               = "modifier_death_prophet_silence",              -- (verify) --
     -- zero-coverage fill batch 2: AOE delayed killers
-    ancient_apparition_cold_feet        = "modifier_ancient_apparition_cold_feet",       -- (verify) --
-    ancient_apparition_ice_blast        = "modifier_ancient_apparition_ice_blast",       -- (verify) --
+    ancient_apparition_cold_feet        = "modifier_cold_feet",       -- (verify) --
+    ancient_apparition_ice_blast        = "modifier_ice_blast",       -- (verify) --
     antimage_mana_void                  = nil,                                            -- no the hero modifier (instant burst); anim-path only
     gyrocopter_homing_missile           = "modifier_gyrocopter_homing_missile",          -- (verify) --
     gyrocopter_call_down                = "modifier_gyrocopter_call_down_slow",          -- (verify) --
@@ -801,6 +815,14 @@ ThreatData.ABILITY_TO_THREAT = {
     razor_storm_surge                   = "modifier_razor_storm_surge_slow",              -- harvested 2026-05-25
     razor_eye_of_the_storm              = "modifier_razor_eye_of_the_storm_armor",        -- harvested 2026-05-25
     rubick_fade_bolt                    = "modifier_rubick_fade_bolt_debuff",             -- harvested 2026-05-25
+    -- third-match harvest
+    ancient_apparition_chilling_touch   = "modifier_chilling_touch_slow",                 -- harvested 2026-05-25
+    ancient_apparition_ice_vortex       = "modifier_ice_vortex",                          -- harvested 2026-05-25
+    ancient_apparition_bone_chill       = "modifier_ancient_apparition_bone_chill_debuff", -- harvested 2026-05-25
+    magnataur_shockwave                 = "modifier_magnataur_shockwave_pull",            -- harvested 2026-05-25 (verify ability name)
+    snapfire_lil_shredder               = "modifier_snapfire_lil_shredder_debuff",        -- harvested 2026-05-25
+    snapfire_magma_burn                 = "modifier_snapfire_magma_burn_slow",            -- harvested 2026-05-25 (verify ability name)
+    witch_doctor_maledict               = "modifier_maledict",                            -- harvested 2026-05-25
     -- harvest -- anim-route mappings for the threats harvested
     -- into THREATS_ON_SELF this version. Where one ability lands MULTIPLE
     -- modifiers on the victim (PA Stifling Dagger, Viper Nethertoxin
@@ -1029,7 +1051,7 @@ ThreatData.RECOMMENDED_SAVES = {
         "item_hurricane_pike", "item_force_staff", "item_cyclone",
         "item_wind_waker", "item_pipe_of_insight",
     },
-    modifier_magnataur_reverse_polarity = {
+    modifier_magnataur_reverse_polarity_stun = {
         -- 1700u radius. Only Blink (1200-1400) reliably escapes; BKB / Aeon
         -- carry through the stun.
         "item_blink", "item_arcane_blink", "item_black_king_bar",
@@ -1253,7 +1275,7 @@ ThreatData.THREAT_TIMING = {
     modifier_lich_chain_frost                       = "pre_cast",
     modifier_skywrath_mystic_flare_aura_effect             = "pre_cast",
     modifier_mars_gods_rebuke                       = "pre_cast",
-    modifier_snapfire_scatterblast                  = "pre_cast",
+    modifier_snapfire_scatterblast_slow                  = "pre_cast",
     modifier_bloodseeker_rupture                    = "pre_cast",
     modifier_obsidian_destroyer_astral_imprisonment = "pre_cast",
     modifier_skywrath_mage_ancient_seal             = "pre_cast",
@@ -1299,7 +1321,7 @@ ThreatData.THREAT_TIMING = {
     modifier_zuus_thundergods_wrath      = "pre_cast",  -- 2s cast point -- plenty of time
     modifier_tidehunter_ravage           = "pre_cast",
     modifier_earthshaker_echo_slam       = "pre_cast",
-    modifier_magnataur_reverse_polarity  = "pre_cast",
+    modifier_magnataur_reverse_polarity_stun  = "pre_cast",
     modifier_disruptor_static_storm_thinker = "mid_channel",
     modifier_treant_overgrowth           = "pre_cast",
     modifier_magnataur_skewer            = "pre_cast",  -- save fires during Magnus's cast point; once grabbed, perp is useless
@@ -1389,7 +1411,7 @@ ThreatData.THREAT_CATEGORY = {
     modifier_lich_chain_frost                       = "targeted_burst",
     modifier_skywrath_mystic_flare_aura_effect             = "delayed_aoe",
     modifier_mars_gods_rebuke                       = "targeted_burst",
-    modifier_snapfire_scatterblast                  = "targeted_burst",
+    modifier_snapfire_scatterblast_slow                  = "targeted_burst",
     modifier_bloodseeker_rupture                    = "targeted_burst",
     modifier_obsidian_destroyer_astral_imprisonment = "targeted_disable",
     modifier_skywrath_mage_ancient_seal             = "targeted_disable",
@@ -1457,7 +1479,7 @@ ThreatData.THREAT_CATEGORY = {
     modifier_zuus_thundergods_wrath            = "targeted_burst",
     modifier_tidehunter_ravage                 = "delayed_aoe",
     modifier_earthshaker_echo_slam             = "delayed_aoe",
-    modifier_magnataur_reverse_polarity        = "delayed_aoe",
+    modifier_magnataur_reverse_polarity_stun        = "delayed_aoe",
     modifier_disruptor_static_storm_thinker    = "delayed_aoe",
     modifier_treant_overgrowth                 = "delayed_aoe",
     modifier_magnataur_skewer                  = "line_projectile",
@@ -1475,8 +1497,8 @@ ThreatData.THREAT_CATEGORY = {
     modifier_silencer_last_word                = "targeted_disable",  -- (silence is a disable)
     modifier_death_prophet_silence             = "targeted_disable",  -- (silence)
     -- zero-coverage fill batch 2
-    modifier_ancient_apparition_cold_feet      = "targeted_disable",  -- (delayed stun)
-    modifier_ancient_apparition_ice_blast      = "targeted_burst",    -- (frost mark + magic burst, executes low HP)
+    modifier_cold_feet      = "targeted_disable",  -- (delayed stun)
+    modifier_ice_blast      = "targeted_burst",    -- (frost mark + magic burst, executes low HP)
     modifier_gyrocopter_homing_missile         = "line_projectile",   -- (homing but dodgeable)
     modifier_kunkka_torrent_thinker            = "delayed_aoe",       -- (geyser warning)
     modifier_kunkka_torrent_stun               = "targeted_disable",  -- (stun applied at impact)
@@ -1547,6 +1569,20 @@ ThreatData.THREAT_CATEGORY = {
     modifier_razor_storm_surge_slow            = "kiting_slow",       --
     modifier_razor_eye_of_the_storm_armor      = "kiting_slow",       -- (armor reduction)
     modifier_rubick_fade_bolt_debuff           = "kiting_slow",       --
+    -- third-match harvest
+    modifier_ancientapparition_coldfeet_freeze = "targeted_disable",  -- (Cold Feet freeze phase)
+    modifier_ancient_apparition_bone_chill_debuff = "kiting_slow",    -- (stacking slow)
+    modifier_chilling_touch_slow               = "kiting_slow",       -- (attack proc slow)
+    modifier_chilling_touch_super_slow         = "kiting_slow",       -- (upgraded)
+    modifier_ice_vortex                        = "kiting_slow",       -- (AoE slow zone)
+    modifier_magnataur_skewer_impact           = "targeted_disable",  -- (impact stun)
+    modifier_magnataur_skewer_slow             = "kiting_slow",       -- (post-impact slow)
+    modifier_magnataur_shockwave_pull          = "targeted_disable",  -- (pull-back disable)
+    modifier_snapfire_lil_shredder_debuff      = "kiting_slow",       --
+    modifier_snapfire_magma_burn_slow          = "kiting_slow",       --
+    modifier_spectre_spectral_dagger_in_path   = "kiting_slow",       -- (chase marker)
+    modifier_maledict                          = "kiting_slow",       -- (WD Maledict mark)
+    modifier_maledict_dot                      = "kiting_slow",       -- (WD Maledict tick)
 }
 
 ---@param threat_mod string|nil
@@ -1611,7 +1647,7 @@ ThreatData.THREAT_SEVERITY = {
     modifier_lich_chain_frost                       = "high",
     modifier_skywrath_mystic_flare_aura_effect             = "high",
     modifier_mars_gods_rebuke                       = "medium",
-    modifier_snapfire_scatterblast                  = "medium",
+    modifier_snapfire_scatterblast_slow                  = "medium",
     modifier_bloodseeker_rupture                    = "high",
     modifier_obsidian_destroyer_astral_imprisonment = "high",
     modifier_skywrath_mage_ancient_seal             = "medium",
@@ -1661,7 +1697,7 @@ ThreatData.THREAT_SEVERITY = {
     modifier_zuus_thundergods_wrath      = "high",   -- global ult, can finish low-HP heroes
     modifier_tidehunter_ravage           = "high",   -- 2.5s AoE stun
     modifier_earthshaker_echo_slam       = "high",   -- AoE stun + damage scales with units in radius
-    modifier_magnataur_reverse_polarity  = "high",   -- 3.75s AoE stun, 1700u radius
+    modifier_magnataur_reverse_polarity_stun  = "high",   -- 3.75s AoE stun, 1700u radius
     modifier_treant_overgrowth           = "high",   -- 5s AoE root
     modifier_disruptor_static_storm_thinker = "medium", -- channel, can walk out
     modifier_shadow_shaman_voodoo        = "medium", -- 3-4s hex
@@ -1681,8 +1717,8 @@ ThreatData.THREAT_SEVERITY = {
     modifier_silencer_last_word          = "low",     -- silence -- annoying but not lethal alone
     modifier_death_prophet_silence       = "low",     -- silence AOE -- locks BKB but not lethal alone
     -- zero-coverage fill batch 2
-    modifier_ancient_apparition_cold_feet = "medium", -- 4s stun if not moved
-    modifier_ancient_apparition_ice_blast = "high",   -- executes low-HP, hard to remove
+    modifier_cold_feet = "medium", -- 4s stun if not moved
+    modifier_ice_blast = "high",   -- executes low-HP, hard to remove
     modifier_gyrocopter_homing_missile    = "medium", -- 3s stun + damage if not destroyed
     modifier_kunkka_torrent_thinker       = "medium", -- 1.5s warning + delayed stun
     modifier_kunkka_x_marks_the_spot      = "low",    -- mostly setup for combo, dispellable
@@ -1746,6 +1782,20 @@ ThreatData.THREAT_SEVERITY = {
     modifier_razor_storm_surge_slow            = "low",    -- ms-trade
     modifier_razor_eye_of_the_storm_armor      = "low",    -- armor reduction
     modifier_rubick_fade_bolt_debuff           = "low",    --
+    -- third-match harvest
+    modifier_ancientapparition_coldfeet_freeze = "medium", -- freeze phase stun
+    modifier_ancient_apparition_bone_chill_debuff = "low", --
+    modifier_chilling_touch_slow               = "low",    --
+    modifier_chilling_touch_super_slow         = "low",    --
+    modifier_ice_vortex                        = "low",    --
+    modifier_magnataur_skewer_impact           = "high",   -- long stun, kill setup
+    modifier_magnataur_skewer_slow             = "low",    --
+    modifier_magnataur_shockwave_pull          = "medium", --
+    modifier_snapfire_lil_shredder_debuff      = "low",    --
+    modifier_snapfire_magma_burn_slow          = "low",    --
+    modifier_spectre_spectral_dagger_in_path   = "low",    --
+    modifier_maledict                          = "medium", -- setup for pickoff burst
+    modifier_maledict_dot                      = "low",    --
 }
 
 ----------------------------------------------------------------------------
