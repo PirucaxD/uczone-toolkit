@@ -607,6 +607,32 @@ ThreatData.ENEMY_CHANNEL_MODIFIERS = {
 }
 
 ----------------------------------------------------------------------------
+-- WORTHY_CHANNEL_ABILITIES -- allowlist for the channel-interrupt bonus
+----------------------------------------------------------------------------
+-- Keyed by the CHANNELLING ability name (what GetChannellingAbility +
+-- Ability.GetName returns on the casting hero), NOT the modifier name -- the
+-- channel modifiers above often live on the victim, not the channelling
+-- caster. A long-cast nuke ult (the hero Assassinate, ~2s) is only worth
+-- burning to interrupt a channel that will still be active when it lands.
+-- This list is the curated set of long, high-value channels worth that
+-- trade. A generic channel detector (NPC.GetChannellingAbility) catches
+-- EVERY channel, including low-value player-releasable ones (Keeper of the
+-- Light Illuminate releases on command and finishes before a 2s cast
+-- lands), so the interrupt bonus must gate on this allowlist rather than
+-- firing on any channel. A killable channeler still draws the ult via the
+-- kill bonus -- this list governs only the interrupt-for-its-own-sake bonus.
+---@type table<string, boolean>
+ThreatData.WORTHY_CHANNEL_ABILITIES = {
+    bane_fiends_grip              = true,
+    pudge_dismember               = true,
+    witch_doctor_death_ward       = true,
+    crystal_maiden_freezing_field = true,
+    enigma_black_hole             = true,
+    disruptor_static_storm        = true,
+    pugna_life_drain              = true,
+}
+
+----------------------------------------------------------------------------
 -- ABILITY_TO_THREAT -- ability name (from anim events) → threat modifier
 ----------------------------------------------------------------------------
 
