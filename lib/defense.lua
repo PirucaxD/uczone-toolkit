@@ -1,56 +1,40 @@
 ---@meta
----lib/defense.lua - generic Layer-2 save dispatcher (Tier-2 extraction).
+---lib/defense.lua , generic save-dispatcher with a per-threat lock domain.
 ---
----Pulls the chain-resolution + chain-walk + throttle bookkeeping out of the
----per-hero defense layer. The DATA (chain tables, SAVE_FIRE map, override
----tables, filter sets) stays hero-side; the ALGORITHM lives here. Each hero
----calls Defense.New{cfg} once at init and keeps thin adapters around the
----returned dispatcher.
+---The hero supplies the data (a SAVE_FIRE map, the chain tables, override
+---sets, filter sets) and a cfg of accessors; this lib supplies the
+---algorithm. Each brain calls Defense.New(cfg) once at init and keeps
+---thin adapters around the returned dispatcher.
 ---
----No cross-hero state. Each dispatcher captures one cfg and operates only on
----the throttle_state / armed_threats refs the hero passes in.
+---The reason for sharing this is the per-(target_idx, canonical_mod,
+---caster_idx) lock domain. When more than one of a brain's fire sites
+---(anim subscriber, armed-tick handler, modifier-create callback,
+---line-projectile intercept) wants to fire a save against the same
+---threat in the same window, the lock keeps exactly one fire alive.
+---Without that, the second site sees an unhandled threat, walks its
+---chain, and the brain burns two saves on one threat. The hero side
+---collapses sibling modifier names to a canonical key via
+---cfg.canonicalize_mod so the lock holds across both fire paths even
+---when they see different sibling spellings of the same threat.
 ---
----Audit-trail of equivalence vs the pre-extraction inline path:
----  - ResolveSaveOrder mirrors Lina pre-v0.5.0 resolve_save_order (anim ->
----    hero -> patched_recommended -> category -> default; first hit wins).
----  - TrySaveSelf mirrors the chain walk: same skip reasons, same order,
----    same reserve-penalty + concurrent-threat math, same tlog event names
----    so log greps keep working unchanged.
----  - CanFire / MarkFired match the inline LAYER2_REACTION_WINDOW gate.
+---No cross-hero state. Each dispatcher captures one cfg and operates
+---only on the throttle_state / armed_threats refs the hero passes in.
+---Multiple brains can use the lib concurrently with isolated state.
 ---
----v0.5.40 TIER 0 (dispatcher unification):
----  - Dispatcher.in_flight_locks / in_flight_locks_ally: per-threat lock map
----    keyed [target_idx][canonical_mod][caster_idx]. Enforces the v0.5.7 E13
----    single-save-per-engagement invariant structurally; replaces the
----    Dedup.threat_already_responded 2.0s window that misses slow-travel
----    threats (Bara WW+Pike, Sniper Assassinate D-key double-fire).
----  - TryAcquireLock / ReleaseLock / ForceNextDispatch: identity-by-handle
----    lock primitives. Lock key tuple (target_idx, canonical_mod, caster_idx)
----    distinguishes casters per v0.5.14 BL-A5/BL-B7 (two casters arming the
----    same modifier are two concurrent threats).
----  - Dispatch / DispatchAlly: new top-level entries that wrap chain-walk in
----    a lock-acquire / on-success-hold cycle. Self-domain and ally-domain
----    locks live in separate maps (Lotus-on-self does NOT block Glimmer-on-
----    ally for the same threat).
----  - TrySaveSelf is now a thin compat wrapper around Dispatch for existing
----    Lina call sites; the Routing phase migrates direct callers.
----  - ResolveSaveOrder gains an optional ctx table for GAP-3 (FC chain
----    demotion under fs_shard_window). Hero populates ctx; lib reads it.
----  - cfg.canonicalize_mod (mod -> string) and cfg.eta_resolver
----    (canonical_mod -> resolver_fn) are new hero-supplied accessors. Both
----    optional; absence falls through to behavioural-neutral defaults
----    (identity canonicalization, 2.0s fallback lock TTL).
----
----See Lina/LIB_DEFENSE_EXTRACTION.md for design + Sniper migration plan.
+---Behaviour-neutral fallbacks: a hero that does not supply
+---cfg.canonicalize_mod / cfg.eta_resolver / cfg.entity_index falls
+---through to identity canonicalisation + a 2.0s fallback TTL +
+---unlocked path. Migration is opt-in per call site; existing
+---TrySaveSelf callers keep working unchanged.
 
 local Defense = {}
 
--- v0.5.39 P3-LOW-magic: reserve-skip / concurrent-penalty thresholds are
--- passed in via cfg (cfg.reserve_skip_floor / cfg.concurrent_penalty) rather
--- than baked in here, so heroes can tune them independently. The hero-side
+-- reserve-skip / concurrent-penalty thresholds are passed in via cfg
+-- (cfg.reserve_skip_floor / cfg.concurrent_penalty) rather than baked
+-- in here, so brains can tune them independently. The hero-side
 -- source of truth lives in the hero file's module-level constants (e.g. Lina:
 -- state.RESERVE_SKIP_FLOOR / state.CONCURRENT_PENALTY). The hero file's
--- chain-peek helper (armed_chain_peek in Lina.lua) MUST mirror these same
+-- chain-peek helper (armed_chain_peek in the brain source) MUST mirror these same
 -- values when previewing the dispatcher's gate; v0.5.39 M1 routed the count
 -- itself through Dispatcher:CountConcurrentExcluding so peek+dispatch share
 -- one method, but the thresholds still need to be kept in lock-step.
@@ -68,7 +52,7 @@ local LOCK_TTL_HARD_CAP_S        = 6.0
 local LOCK_TTL_FLOOR_S           = 0.4
 
 ---Create a dispatcher bound to one hero's defense config.
----@param cfg table see Lina/LIB_DEFENSE_EXTRACTION.md for the cfg field list
+---@param cfg table see the upstream design notes for the cfg field list
 ---  v0.5.40 TIER 0 additions (all optional, backward-compatible):
 ---    cfg.canonicalize_mod   fun(mod:string|nil):string|nil
 ---        Hero-supplied alias collapser. Maps modifier_pudge_dismember_pull and
@@ -122,15 +106,13 @@ end
 ---@return table chain, boolean is_authoritative
 function Dispatcher:ResolveSaveOrder(threat_mod, category_hint, ability_name, ctx)
     local c = self.cfg
-    -- v0.5.13 E4 (HI-3 / PE04-OVERRIDE-WORKS): emit a single diagnostic tlog at
-    -- each return point so operators can read the resolved chain HEAD directly
-    -- from the log. PE04-OVERRIDE-WORKS confirmed LINA_SAVE_OVERRIDES is being
-    -- consulted (BKB > Manta > Eul > Aeon on Duel) but the level-1
-    -- threat_on_self line was reporting the static lib `save=` hint, which
-    -- operators kept reading as the resolved head and concluding the override
-    -- was unconsulted. No behavioural change to the resolver itself; this is
-    -- diagnostic_only. The companion Lina.lua threat_on_self tlog will drop /
-    -- demote that misleading `save = entry.save` field in a sibling patch.
+    -- Emit a single diagnostic tlog at each return point so operators can
+    -- read the resolved chain HEAD directly from the log without raising
+    -- verbosity. No behavioural change to the resolver itself; this is
+    -- diagnostic_only. The hero-side threat_on_self tlog should NOT also
+    -- report `save = entry.save` from the static lib hint, which operators
+    -- otherwise read as the resolved head and conclude the override was
+    -- unconsulted.
     local picked, authoritative
     if ability_name then
         local ao = c.anim_save_overrides[ability_name]
@@ -218,7 +200,7 @@ end
 
 ---Mark a save as just-fired (writes throttle_state.last_save_t). Idempotent.
 ---v0.5.39 P1-LAST-SAVE-TGT: the throttle_state.last_save_target write has been
----removed (Sniper-port orphan; no Lina-side reader, see Lina.lua state-decl
+---removed (Sniper-port orphan; no Lina-side reader, see the brain source state-decl
 ---comment near state.last_save_t for history). Method signature preserved.
 ---@param threat_caster any  may be nil (kept for signature compatibility)
 function Dispatcher:MarkFired(threat_caster)
@@ -244,7 +226,7 @@ end
 ---entry-handle identity. Single source of truth for the reserve/concurrent
 ---penalty math; Lina armed_chain_peek delegates here so the per-hero peek
 ---and the lib chain-walk cannot drift. Pass the live armed_entry on the
----armed-fire path (Lina.lua armed_threats_tick L1528) so peek+dispatch agree
+---armed-fire path (the brain source armed_threats_tick L1528) so peek+dispatch agree
 ---on n=0 for the typical single-armed-threat case. Non-armed call sites
 ---(events / persistent / threat_on_self / lotus / line_intercept) pass nil
 ---and count all armed rows (legacy behaviour preserved).

@@ -81,27 +81,27 @@ function Native.Resolve(name)
     }
 end
 
----Pause (disable) the native Hit & Run + Orb Walker for `name`, saving prior
----values for a later restore. Idempotent. Returns true only on the first
----not-paused -> paused transition (so the caller can log once).
----v0.5.31 task-10 probe: also return the saved snapshot as a second value so
----the caller can log what we captured. Lets us diagnose whether the snapshot
----was poisoned (wget returned nil or wrong values) vs whether something writes
----hr_kiting=true post-restore.
+---Pause (disable) the native Hit & Run + Orb Walker for `name`, saving
+---prior values for a later restore. Idempotent. Returns true only on
+---the first not-paused -> paused transition (so the caller can log
+---once). Second return is the saved snapshot table on a real pause,
+---so the caller can log what was captured (useful for diagnosing
+---"snapshot looks right but something rewrites it post-restore"
+---bugs).
 ---
----v0.5.32 user-config guard: if user's hr_override is already false (per-hero
----override OFF -> framework uses global HR config), SKIP the entire pause
----cycle. The brain's per-hero wsets to hr_enabled / hr_kiting wouldn't take
----effect anyway (override=false means global values are used), and forcing
----hr_override=true for the combo window triggers a framework-side state latch
----that breaks user's mouse-follow even after we RestoreHitRun puts override
----back to false. User-confirmed via isolation test 2026-06-01: with
----pause_hitrun toggle OFF, Lina moves; with toggle ON and per-hero
----override=false, Lina stuck. Skip preserves combo behaviour (user's global
----HR config is whatever it is; if it interferes with combos that's a separate
----fix). Returns false (newly_paused=false) + nil probe so callers see a noop;
----second-return type is a STRING reason for the skip rather than a probe
----table so callers can log the reason if they want.
+---User-config guard: if the user's hr_override is already false (per-
+---hero override OFF means the framework uses the user's global HR
+---config), SKIP the entire pause cycle. The brain's per-hero wsets
+---to hr_enabled / hr_kiting would not take effect anyway (override=
+---false means the global values win), and forcing hr_override=true
+---for the combo window triggers a framework-side state latch that
+---breaks the user's mouse-follow even after RestoreHitRun puts
+---override back to false. The skip returns `false` + the string
+---"override_off" as the second value so the caller can log the
+---reason. The brain still gets to fire its combo against whatever
+---the global HR config is; if that interferes with combos in a way
+---the user does not want, that's a config decision, not something
+---this lib should override.
 ---@param name string
 ---@return boolean newly_paused
 ---@return table?|string  probe_or_skip_reason  table on real pause, "override_off" string on skip
