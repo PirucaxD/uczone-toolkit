@@ -112,7 +112,7 @@ local dispatcher = Defense.New {
 | `dispatcher:TryAcquireLock(target, canonical_mod, caster, ttl)` | Lock primitive. `(ok, existing_lock_info)` |
 | `dispatcher:ReleaseLock(target, canonical_mod, caster)` | Lock primitive. Idempotent. |
 | `dispatcher:ForceNextDispatch(target, canonical_mod, caster)` | One-shot lock-bypass for panic-key paths. Drops the lock for the next `Dispatch` on the matching tuple. |
-| `dispatcher:ResolveSaveOrder(mod, category_hint, ability_name, ctx)` | Returns the resolved chain + `is_authoritative`. `ctx` is an optional context table the chain walk consults (e.g. demoting one save under a condition the hero signals). |
+| `dispatcher:ResolveSaveOrder(mod, category_hint, ability_name, ctx)` | Returns the resolved chain + `is_authoritative`. `ctx` is an optional context table forwarded to `cfg.post_pick_filter` (when the hero registers one) so the chain can be rewritten on live game state (e.g. demoting one save under a condition the hero signals). |
 | `dispatcher:CanFire()` | Throttle gate. Returns true iff `now - last_save_t >= cfg.reaction_window`. |
 | `dispatcher:MarkFired(threat_caster)` | Writes `cfg.throttle_state.last_save_t = cfg.now()`. The lib does NOT call this on its own; the hero's on_save_fired callback does, so heroes that need the chain to pass through their own bookkeeping keep ownership. |
 | `dispatcher:CountConcurrentExcluding(armed_entry)` | Counts armed_threats rows excluding `armed_entry` by handle identity. Used inside the reserve-penalty math; also exposed so a hero-side chain peek can mirror the same count. |
@@ -162,6 +162,48 @@ dispatcher:Dispatch(intent, mod, caster, state.self_npc, fire_thunk,
 The lock still applies; the only difference is that on success the
 thunk's return-value (`true`) keeps the lock HELD instead of letting
 the chain walk decide.
+
+## Hook: rewriting the chain on live ctx (`cfg.post_pick_filter`)
+
+`ResolveSaveOrder` picks a chain from the chain tables (anim override,
+hero override, patched-recommended, category, default fallback). If
+your hero has a save whose preferred position depends on a live
+game-state condition (a buff window, a Scepter / Shard configuration,
+a per-engagement latch), you can register a chain rewrite hook:
+
+```lua
+local dispatcher = Defense.New {
+    -- ... other cfg fields ...
+    post_pick_filter = function(picked, ctx, threat_mod, authoritative)
+        if not (ctx and ctx.my_window_active) then
+            return picked, authoritative
+        end
+        -- Build a NEW chain; do not mutate `picked` since it may be
+        -- aliased into the cfg-supplied override / category / default
+        -- tables.
+        local rewritten = {}
+        for i = 1, #picked do
+            if picked[i] ~= "my_save_to_demote" then
+                rewritten[#rewritten + 1] = picked[i]
+            end
+        end
+        rewritten[#rewritten + 1] = "my_save_to_demote"
+        return rewritten, authoritative
+    end,
+}
+```
+
+The hook fires after chain resolution, before `ResolveSaveOrder`
+returns. The lib applies `new_auth` only when non-nil so a hook that
+returns just a new chain preserves the original `authoritative` flag.
+Return `nil` for `picked` to keep the resolved chain unchanged.
+
+`ctx` is the optional table the caller passes to `Dispatch` /
+`DispatchAlly` / `TrySaveSelf` / `ResolveSaveOrder`. The lib treats
+it as opaque, so the hero owns its shape and what keys it cares
+about. A typical pattern is a hero-side helper
+`fun() -> { my_window_active = <predicate>, ... }` called at each
+dispatch site so the hook reads a fresh snapshot.
 
 ## Why `MarkFired` is not called by the lib
 
