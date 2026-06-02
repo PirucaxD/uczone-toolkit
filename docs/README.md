@@ -26,6 +26,7 @@ real reference; these pages are the "do I want this lib at all?" overview.
 | [order](order.md) | one chokepoint for every order you issue, with validation + dedup |
 | [damage](damage.md) | recent-damage feed, plus frame-correct kill math |
 | [anim](anim.md) | turn enemy animations/particles into "they just cast X" events |
+| [native](native.md) | pause/resume + reassert the framework's Hit & Run / Orb Walker so a multi-step combo's cast points aren't cancelled by the order flood |
 
 **Combat reasoning:**
 
@@ -34,6 +35,7 @@ real reference; these pages are the "do I want this lib at all?" overview.
 | [target](target.md) | composable predicates - is this a real enemy hero, is it killable... |
 | [timing](timing.md) | will the target be invuln / dispel out of my combo? |
 | [save_select](save_select.md) | given a threat, rank which of my save items actually counter it |
+| [defense](defense.md) | a save-dispatcher with a per-(target, mod, caster) lock so two of your fire paths can't double-save against one threat |
 
 **Static game data** - generated from Valve's KV files (see `tools/`):
 

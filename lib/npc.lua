@@ -2,7 +2,7 @@
 ---lib/npc.lua , generic NPC stat & inventory queries.
 ---
 ---Hero-agnostic. Each function takes an npc handle as the first argument.
----Extracted from Sniper.lua v6.15.112 to reduce main-chunk local count
+---Extracted from the brain source v6.15.112 to reduce main-chunk local count
 ---(Lua 5.4's 200-locals-per-function hard limit was hit twice in
 ---v6.15.110 and v6.15.111).
 ---
@@ -12,7 +12,7 @@
 ---
 ---NOT in scope (intentional):
 ---  - Range / cast-range / spell-amp queries are GLOBAL functions in
----    Sniper.lua (no `local` keyword) so they don't consume local slots
+---    the brain source (no `local` keyword) so they don't consume local slots
 ---    , extracting them would be aesthetic-only with zero slot benefit.
 ---    Re-evaluate if a future hero re-uses them and Sniper's globals
 ---    become awkward.

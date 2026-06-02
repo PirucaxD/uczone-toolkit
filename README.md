@@ -26,11 +26,16 @@ projectile at a moving target), `log` (leveled + throttled logging),
 **Event plumbing** - wire once, then forget:
 `order` (one validated chokepoint for every order you issue), `damage`
 (recent-damage feed + correct kill math), `anim` (enemy animations ->
-"they just cast X" events).
+"they just cast X" events), `native` (pause/resume + reassert the
+framework's Hit & Run / Orb Walker so your combo's cast points
+aren't cancelled by the order flood).
 
 **Combat reasoning:**
 `target` (composable unit predicates), `timing` (will they dodge my combo),
-`save_select` (which of my escape items actually counters this threat).
+`save_select` (which of my escape items actually counters this threat),
+`defense` (a full save-dispatcher with a per-(target, mod, caster)
+lock domain so two of your fire paths can't double-save against one
+threat).
 
 **Static game data**, generated from Valve's KV files:
 `item_data`, `ability_data`, `unit_data`, `hero_data`, `threat_data`.

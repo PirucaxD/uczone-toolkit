@@ -1218,7 +1218,7 @@ ThreatData.RECOMMENDED_SAVES = {
 ---get the canonical response for their behavioral class without per-modifier
 ---tuning.
 ---
----v6.15.259: extracted from Sniper/Sniper.lua so other hero brains can
+---v6.15.259: extracted from Sniper/the brain source so other hero brains can
 ---consume the same category-keyed defaults.
 ---v6.15.260: HERO-AGNOSTIC -- no per-hero save names appear in any chain.
 ---Hero brains insert their own abilities via per-hero category-patch tables
@@ -2151,7 +2151,7 @@ end
 -- these active, the brain MUST refuse R (the cast reflects damage back). This
 -- is OFFENSIVE-side guarding (hero-as-attacker), distinct from THREATS_ON_SELF
 -- (hero-as-defender). Lotus stays out of this table - Target.HasReadyLotus is
--- engine-side and already filtered by r_target_blocked (Lina.lua:2178).
+-- engine-side and already filtered by r_target_blocked (the brain source:2178).
 -- Add a new entry only when (a) the modifier name is VPK-verified per lesson
 -- 13, and (b) the effect reflects damage back to the caster (not merely
 -- absorbs or dispels - those are separate concerns).
@@ -2191,7 +2191,7 @@ ThreatData.SPELL_DEFLECT_MODIFIERS = {
 --
 -- Source-of-truth markers in comments:
 --   vpk     -- confirmed via grep against pak01_*.vpk
---   audit   -- LINA_DEFER_TO_ARMED (Lina.lua L728-741) or other in-tree usage
+--   audit   -- LINA_DEFER_TO_ARMED (the brain source L728-741) or other in-tree usage
 --   manual  -- known-pair from threat catalog ownership, no separate VPK hit
 ----------------------------------------------------------------------------
 
@@ -2201,7 +2201,7 @@ ThreatData.CANONICAL_MOD_ALIASES = {
     -- LINA_SAVE_OVERRIDES key and ABILITY_TO_THREAT value).
     -- vpk: pak01_009 ships modifier_spirit_breaker_charge_of_darkness,
     --      _debuff, _target as engine-visible names.
-    -- audit: Lina.lua LINA_DEFER_TO_ARMED L730 maps _vision -> "bara_charge",
+    -- audit: the brain source LINA_DEFER_TO_ARMED L730 maps _vision -> "bara_charge",
     --        confirming _vision is a real victim-side sibling the brain sees.
     modifier_spirit_breaker_charge_of_darkness_vision = "modifier_spirit_breaker_charge_of_darkness",  -- audit
     modifier_spirit_breaker_charge_of_darkness_target = "modifier_spirit_breaker_charge_of_darkness",  -- vpk
@@ -2211,7 +2211,7 @@ ThreatData.CANONICAL_MOD_ALIASES = {
     -- ABILITY_TO_THREAT value, RECOMMENDED_SAVES key). _target is the
     -- victim-side root-on-impact debuff; _movement_friendly is the carried-ally
     -- variant (Lina-as-ally; lock-domain irrelevant but folded for safety).
-    -- audit: Lina.lua LINA_DEFER_TO_ARMED L729 maps _target -> "tusk_snowball".
+    -- audit: the brain source LINA_DEFER_TO_ARMED L729 maps _target -> "tusk_snowball".
     -- vpk: pak01_009 ships _movement_friendly. Canonical _movement itself is
     -- field-validated (THREATS_ON_SELF, ABILITY_TO_THREAT) rather than direct
     -- VPK-grep-validated; engine-vs-VPK distinction documented per verifier.
@@ -2220,7 +2220,7 @@ ThreatData.CANONICAL_MOD_ALIASES = {
     modifier_tusk_snowball_movement_friendly   = "modifier_tusk_snowball_movement",  -- vpk
 
     -- PA Phantom Strike. Canonical = _target (catalog key, anim-stamp target).
-    -- audit: Lina.lua LINA_DEFER_TO_ARMED L740 maps _target -> instant_blink arm,
+    -- audit: the brain source LINA_DEFER_TO_ARMED L740 maps _target -> instant_blink arm,
     -- confirming _target IS the canonical the brain reasons in.
     -- The bare modifier_phantom_assassin_phantom_strike does NOT exist as a
     -- separate engine modifier (pak01 grep returns only the aghsfort variant);
@@ -2324,7 +2324,7 @@ function ThreatData.CanonicalMod(mod_name)
 end
 
 -- Exported alias under the longer name used in the audit doc. Both names
--- resolve to the same function so Lina.lua / lib/defense.lua can pick whichever
+-- resolve to the same function so the brain source / lib/defense.lua can pick whichever
 -- reads better at call site without an extra indirection.
 ThreatData.CanonicalizeThreatMod = ThreatData.CanonicalMod
 -- Third alias under the bare 'Canonicalize' spelling: zero-cost defensive

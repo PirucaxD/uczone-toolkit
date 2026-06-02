@@ -4,7 +4,7 @@
 ---Hero-agnostic. All functions take entity or vector args explicitly
 ---(no implicit hero-state reads).
 ---
----Extracted from Sniper.lua v6.15.112 to reduce main-chunk local count.
+---Extracted from the brain source v6.15.112 to reduce main-chunk local count.
 
 local Geometry = {}
 
@@ -95,7 +95,7 @@ end
 -- smoothed velocity prediction (vel_hist) + AoE-coverage placement
 -- Added 2026-05-28. Hero-agnostic; mirrors the inline sample_velocities /
 -- predict_pos model proven in Sniper (Sniper keeps its own inline copy for now;
--- see Sniper/PREDICTION_LIB_MIGRATION.md). Module-level vel_hist state is shared
+-- see the prediction migration notes). Module-level vel_hist state is shared
 -- across all consumers via Lua's require-cache; call SampleVelocities once per
 -- tick from a consumer's OnUpdateEx.
 ----------------------------------------------------------------------------
