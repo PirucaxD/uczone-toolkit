@@ -1,20 +1,20 @@
 ---@meta
----lib/signal.lua - cross-hero coordination registry.
+---lib/signal.lua , cross-hero coordination registry.
 ---
 ---Each hero brain that loads calls `Signal.Register(name, api)` to publish
 ---its public surface. Other heroes call `Signal.Get(name)` to look up an
 ---ally hero's brain and call into its API. The registry lives on this
 ---module's table (a Lua module is a singleton across `require` calls in the
----same Lua state) - so all hero scripts that `require("lib.signal")` share
----the same `_registry`. Note UCZone's sandbox doesn't expose `_G`,
+---same Lua state) , so all hero scripts that `require("lib.signal")` share
+---the same `_registry`. Note v6.15.3: UCZone's sandbox doesn't expose `_G`,
 ---so we cannot store the registry as a true global; the module-singleton
 ---pattern is the workaround.
 ---
 ---Use cases:
----  - Save coordination: a carry broadcasts `save_request` and the support
----    brains (Wisp/Oracle/Dazzle/Disruptor) subscribe.
----  - Nuke coordination: each brain publishes "I am firing my ult on target
----    X at time T", others suppress a redundant commit on the same kill.
+---  - Sniper saving an ally: `Signal.Broadcast("save_request", { ally = e })`
+---    and Wisp/Oracle/Dazzle/Disruptor brains subscribe.
+---  - Multi-Sniper R coordination: each Sniper publishes "I am firing R on
+---    target X at time T", others suppress redundant R commits.
 ---  - Item-coordination: brain A publishes "I will give Lotus on tick T",
 ---    brain B knows not to also give Lotus.
 ---
@@ -26,27 +26,27 @@
 
 local Signal = {}
 
--- UCZone's Lua sandbox doesn't expose `_G` as a global
+-- v6.15.3 hotfix: UCZone's Lua sandbox doesn't expose `_G` as a global
 -- table (`attempt to index a nil value (global '_G')` at module load).
 -- Cross-hero state lives on the module table itself; Lua's `require` cache
 -- ensures all hero files that `require("lib.signal")` see the same table.
--- This works as long as all heroes share a single Lua state - the standard
+-- This works as long as all heroes share a single Lua state , the standard
 -- UCZone case. If the framework ever isolates hero scripts in separate
 -- states, a different bridge would be needed (e.g., writes through db.json).
 local _registry = {
-    api      = {},   -- name -> api-table
-    subs     = {},   -- channel -> { tokens -> fn }
-    last     = {},   -- channel -> last-payload (cache)
-    next_tok = 0,    -- monotonic counter
+    api      = {},   -- name → api-table
+    subs     = {},   -- channel → { tokens → fn }
+    last     = {},   -- channel → last-payload (cache)
+    next_tok = 0,    -- v6.15.2 H5: monotonic counter
 }
 -- Re-export on the module table so callers can introspect if they want.
 Signal._registry = _registry
 
 ---Register a hero's public API.
----@param name string  Hero identifier ("Pudge", "Lina", etc.)
+---@param name string  Hero identifier ("Sniper", "Pudge", etc.)
 ---@param api  table   Table of functions the hero exposes.
 function Signal.Register(name, api)
-    -- nil-name would raise "table index is nil" on the next line.
+    -- v6.15.2 H6: nil-name would raise "table index is nil" on the next line.
     if name == nil then return end
     _registry.api[name] = api
 end
@@ -59,7 +59,7 @@ function Signal.Get(name)
 end
 
 ---Subscribe to a channel. The callback fires with the payload published
----via Broadcast. Subscribers are scoped to the current Lua state - if the
+---via Broadcast. Subscribers are scoped to the current Lua state , if the
 ---hero file reloads, prior subscriptions are dropped (the calling code is
 ---responsible for re-subscribing on init).
 ---
@@ -67,9 +67,9 @@ end
 ---@param channel  string
 ---@param callback fun(payload: table)
 ---@return integer token
--- monotonic global counter, NOT array length. Using `#arr + 1`
+-- v6.15.2 H5: monotonic global counter, NOT array length. Using `#arr + 1`
 -- on a sparse table (with holes from Unsubscribe) returns the last non-nil
--- index - re-uses an in-use token, silently overwriting a still-live
+-- index , re-uses an in-use token, silently overwriting a still-live
 -- subscriber. The counter avoids reuse forever.
 function Signal.Subscribe(channel, callback)
     local arr = _registry.subs[channel]
@@ -93,7 +93,7 @@ end
 ---hero brain doesn't break the chain.
 ---@param channel string
 ---@param payload table|nil
--- iterate via `pairs` since the subs table is now keyed by
+-- v6.15.2 H5: iterate via `pairs` since the subs table is now keyed by
 -- monotonic token (sparse). #arr + numeric-for iteration no longer applies.
 function Signal.Broadcast(channel, payload)
     _registry.last[channel] = payload
@@ -121,7 +121,7 @@ end
 function Signal.Last(channel) return _registry.last[channel] end
 
 ---Drop the cached last-payload for a channel (or all channels if nil).
---- previously `last[channel]` grew forever - large per-tick
+---v6.15.2 low: previously `last[channel]` grew forever , large per-tick
 ---broadcasts held references to old payloads indefinitely. Hero brains
 ---should call this when shutting down or hot-reloading.
 ---@param channel string|nil

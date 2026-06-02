@@ -1,13 +1,24 @@
 ---@meta
----lib/npc.lua - generic NPC stat & inventory queries.
+---lib/npc.lua , generic NPC stat & inventory queries.
 ---
 ---Hero-agnostic. Each function takes an npc handle as the first argument.
----Small on purpose - it covers the two checks every brain ends up needing:
----  - Aghanim's Shard / Scepter ownership
----  - item lookup + off-cooldown checks
+---Extracted from Sniper.lua v6.15.112 to reduce main-chunk local count
+---(Lua 5.4's 200-locals-per-function hard limit was hit twice in
+---v6.15.110 and v6.15.111).
 ---
----Every getter is nil-safe: pass a nil handle and you get a falsy result
----back instead of a crash, so you can skip the guard at the call site.
+---Two extracted areas:
+---  - Aghanim's Shard / Scepter ownership checks
+---  - Item lookup + ready checks
+---
+---NOT in scope (intentional):
+---  - Range / cast-range / spell-amp queries are GLOBAL functions in
+---    Sniper.lua (no `local` keyword) so they don't consume local slots
+---    , extracting them would be aesthetic-only with zero slot benefit.
+---    Re-evaluate if a future hero re-uses them and Sniper's globals
+---    become awkward.
+---  - find_ability / ability_ready stay in Sniper because find_ability has
+---    a Sniper-specific multi-slot scan branch for the shard-granted
+---    grenade. Generalize when hero #2 has a similar shard-granted ability.
 
 local NPC_lib = {}
 
@@ -27,9 +38,9 @@ function NPC_lib.has_scepter(npc)
     return (NPC.HasScepter and NPC.HasScepter(npc)) or false
 end
 
----Item lookup by name. Defaults to INVENTORY ONLY (the six active slots,
----not backpack/stash) - that is what you almost always want. Pass
----`inventory_only = false` to also scan backpack + stash.
+---Item lookup by name. Includes backpack/stash by default? NO , third
+---arg `true` means INVENTORY ONLY (active slots, not backpack/stash).
+---Sniper's pattern. Use `false` to scan inventory + backpack + stash.
 ---@param npc userdata|nil
 ---@param name string
 ---@param inventory_only? boolean (default true)
@@ -52,8 +63,8 @@ end
 
 ---Stale-safe absolute-origin read. `Entity.GetAbsOrigin` THROWS
 ---("arg is not an Entity") on a stale / garbage handle; `Entity.IsEntity`
----rejects that. The result is STILL nilable - a valid but dead or
----mid-respawn entity returns nil - so callers must still nil-check the
+---rejects that. The result is STILL nilable -- a valid but dead or
+---mid-respawn entity returns nil -- so callers must still nil-check the
 ---return. This is the typed safe-read for the throw-on-stale-handle case.
 ---@param e userdata|nil
 ---@return userdata|nil  Vector position, or nil if e is invalid / dead
@@ -62,10 +73,10 @@ function NPC_lib.origin(e)
     return Entity.GetAbsOrigin(e)
 end
 
----Safe ability-name read. `Ability.GetName` throws on a real entity that
----is not an ability (the typical case is an item handle resolved from a
----native order queue's abilityIndex). `pcall` is the correct guard for a
----throw-on-valid-entity API; an `IsEntity` check alone is not enough.
+---Safe ability-name read. `Ability.GetName` THROWS on a real entity that
+---is not an ability (e.g. an item handle resolved from a native order
+---queue's abilityIndex -- see API_GOTCHAS.md). pcall is the correct guard
+---for a throw-on-valid-entity API; an IsEntity check alone is not enough.
 ---@param ab userdata|nil
 ---@return string|nil  the ability name, or nil on a bad / nameless handle
 function NPC_lib.ability_name(ab)

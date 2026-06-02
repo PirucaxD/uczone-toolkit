@@ -1,17 +1,17 @@
 ---@meta
----lib/anim.lua - animation->ability map dispatcher.
+---lib/anim.lua , animation→ability map dispatcher.
 ---
 ---Heroes register per-matchup maps (`Anim.RegisterMap`) and particle
 ---signatures (`Anim.RegisterParticle`). OnUnitAnimation / OnParticleCreate
----resolve the casting unit's map -> fire `role` events to subscribers.
+---resolve the casting unit's map → fire `role` events to subscribers.
 ---
 ---Hot-path conventions:
----  - Particle matching uses integer `particleNameIndex` via
+---  • Particle matching uses integer `particleNameIndex` via
 ---    Utils.ResourceIdFromName (string compare is too slow at the OnParticleCreate
 ---    firehose rate).
----  - OnUnitAnimation tries integer activity first, then sequenceName string.
----  - Local hero animations are not dispatched (we know our own state).
----  - Stolen/invoked abilities (Rubick, Invoker) are out of scope for v1 -
+---  • OnUnitAnimation tries integer activity first, then sequenceName string.
+---  • Local hero animations are not dispatched (we know our own state).
+---  • Stolen/invoked abilities (Rubick, Invoker) are out of scope for v1 ,
 ---    TODO when the first such hero needs it.
 
 local Anim = {}
@@ -28,22 +28,22 @@ local frame = function() return GlobalVars.GetFrameCount() end
 ---@field role    string  -- gap_close | hard_disable | ult_burst | channel_start | dispel | save
 
 ---@type table<string, table<integer|string, AnimEntry>>
-local maps = {}  -- unit_name -> activity_key -> entry
+local maps = {}  -- unit_name → activity_key → entry
 
 ---@type table<integer, {ability:string, role:string, on_target_field:string|nil}>
-local particles = {}  -- particle_name_index -> entry
+local particles = {}  -- particle_name_index → entry
 
 ---@type {substr:string, ability:string, role:string, on_target_field:string|nil}[]
-local particle_patterns = {}  -- substring-name fallback for particles
+local particle_patterns = {}  -- v6.15.241 (clue C2): substring-name fallback
 
 ---@type table<string, fun(event:table)[]>
-local subscribers = {}  -- role -> [callback]
+local subscribers = {}  -- role → [callback]
 
 -- per-(hero, activity) once-per-pair "unmapped" logging
 local unmapped_logged = {}
 
 -- per-frame dispatch dedup so multi-wire doesn't double-fire subscribers
-local dispatched = {}  -- key -> frame
+local dispatched = {}  -- key → frame
 
 local function dedup(key)
     local f = frame()
@@ -68,7 +68,7 @@ end
 ---Register an animation map for a unit (typically a hero short name like
 ---"npc_dota_hero_slark"). Map keys are either an `Enum.GameActivity` integer
 ---OR a sequence name string. Values are `{ability=, role=}` tables.
----Duplicate registrations merge - later keys overwrite earlier.
+---Duplicate registrations merge , later keys overwrite earlier.
 ---@param unit_name string
 ---@param map table<integer|string, AnimEntry|nil>
 function Anim.RegisterMap(unit_name, map)
@@ -96,9 +96,9 @@ function Anim.RegisterParticle(particle_path, signature)
     particles[idx] = signature
 end
 
----Register a particle SUBSTRING pattern - a rot-resistant fallback for
+---Register a particle SUBSTRING pattern -- a rot-resistant fallback for
 ---OnParticleCreate when the exact resource path is not registered (or a
----future patch versions the path). `substr` is matched lowercased + plain
+---Valve patch versions the path). `substr` is matched lowercased + plain
 ---against the particle's full name; use a stable distinctive ability token
 ---(e.g. "black_hole", "chronosphere"). Same signature shape as
 ---RegisterParticle. The integer-index path stays the primary fast route;
@@ -133,10 +133,10 @@ end
 ----------------------------------------------------------------------------
 
 -- Facing threshold for "is the caster aimed at me?" NPC.FindRotationAngle
--- returns RADIANS (verified empirically: comparing the raw value to a
--- degree threshold capped |angle| at pi, so `angle > 30` was never true
--- and the gate degraded to always-pass). math.deg converts before the
--- 30-degree compare.
+-- returns RADIANS (established v6.15.215 in the Sniper brain: comparing the
+-- raw value to a degree threshold capped |angle| at pi, so `angle > 30` was
+-- never true and the gate degraded to always-pass). math.deg converts
+-- before the 30-degree compare.
 local DEFAULT_ANGLE_DEG = 30
 local DEFAULT_RANGE = 1200
 
@@ -148,16 +148,19 @@ local function compute_target_self(caster, ability_range, instant_target)
     local me_pos = Entity.GetAbsOrigin(me)
     local range = ability_range or DEFAULT_RANGE
     if not NPC.IsPositionInRange(caster, me_pos, range) then return false end
-    -- Unit-target abilities (PA Phantom Strike, Pudge Dismember, OD Astral
-    -- Imprisonment, Primal Beast Pulverize, etc.) select their target by
-    -- REFERENCE, not by aim - the caster does not face the target before
-    -- casting. Per-entry `instant_target = true` skips the facing gate for
-    -- these. Without this flag, correctly degree-gating the facing check
-    -- under-detects unit-target casts entirely. The facing gate still
-    -- applies to aim-based projectile abilities (Pudge Hook, Lina LSA,
-    -- Skywrath bolts) where the caster does face the target.
+    -- v6.15.250: unit-target abilities (PA Phantom Strike, Pudge Dismember,
+    -- OD Astral Imprisonment, Primal Beast Pulverize, etc.) select their
+    -- target by REFERENCE, not by aim -- the caster does not face the
+    -- target before casting. Per-entry `instant_target = true` skips the
+    -- facing gate for these abilities. Without this flag, the v6.15.232
+    -- "polish 1/4" radians fix (math.deg added below) regressed PA's
+    -- gap-close detection: pre-v6.15.232 the gate accidentally always
+    -- passed (raw radians ~pi never > 30 degrees), letting PA Phantom
+    -- Strike fire saves. The math.deg fix is correct for aim-based
+    -- projectile abilities (Pudge Hook, Lina LSA, Skywrath bolts) where
+    -- the caster does face the target, so the gate stays for those.
     if instant_target then return true end
-    -- facing gate (FindRotationAngle is radians - math.deg before compare)
+    -- facing gate (FindRotationAngle is radians , math.deg before compare)
     local angle = math.deg(math.abs(NPC.FindRotationAngle(caster, me_pos)))
     if angle > DEFAULT_ANGLE_DEG then return false end
     return true
@@ -209,11 +212,12 @@ function Anim.OnUnitAnimation_handler(data)
     -- "explicitly not interesting" sentinel (registered as nil/false value)
     if entry == false then return end
 
-    -- thread the entry's `range` field through to compute_target_self
+    -- v6.14.1 C4: thread the entry's `range` field through to compute_target_self
     -- so short-range gap-closers don't fall back to DEFAULT_RANGE=1200 and
     -- false-positive across the map. RegisterMap entries may include
-    -- `range = N` for per-ability gating, and optional `instant_target = true`
-    -- for unit-target abilities that skip the facing gate.
+    -- `range = N` for per-ability gating.
+    -- v6.15.250: also thread `instant_target` so unit-target abilities can
+    -- bypass the facing gate (see compute_target_self comment).
     local target_self = compute_target_self(caster, entry.range, entry.instant_target)
     local event = {
         caster       = caster,
@@ -224,18 +228,18 @@ function Anim.OnUnitAnimation_handler(data)
     }
     local key = "a:" .. Entity.GetIndex(caster) .. ":" .. tostring(data.activity) .. ":" .. frame()
     dispatch(entry.role, event, key)
-    -- prune dispatched-event table on the anim path too. Prior
+    -- v6.14.1 low: prune dispatched-event table on the anim path too. Prior
     -- code only called reap_dispatched from OnParticleCreate_handler, so any
     -- hero with no particle subscriptions accumulated dispatched keys
     -- unbounded over the match.
     reap_dispatched()
 end
 
--- Substring-name fallback for OnParticleCreate. The integer-index lookup is
--- the primary fast path; this runs only on a miss, only when patterns are
--- registered, and only for an enemy-side particle (the team gate keeps it
--- off the bulk of the particle firehose). Matches the particle's full name
--- - substring-tolerant against a particle-path rename.
+-- v6.15.241 (clue C2): substring-name fallback for OnParticleCreate. The
+-- integer-index lookup is the primary fast path; this runs only on a miss,
+-- only when patterns are registered, and only for an enemy-side particle
+-- (the team gate keeps it off the bulk of the particle firehose). Matches
+-- the particle's full name -- substring-tolerant against a Valve rename.
 local function match_particle_pattern(data)
     if #particle_patterns == 0 then return nil end
     local nm = data.fullName or data.name
@@ -261,11 +265,11 @@ function Anim.OnParticleCreate_handler(data)
         if not sig then return end
     end
 
-    -- `data.entity` is the cast SOURCE; `data.entityForModifiers`
+    -- v6.14.1 H5: `data.entity` is the cast SOURCE; `data.entityForModifiers`
     -- is who the spell HITS. The prior code aliased `caster` to
-    -- `entityForModifiers or entity` - for an enemy ult particle landing on
-    -- your hero, that set ev.caster = your hero (the target), wrong. We give
-    -- both fields distinctly so subscribers can pick. `caster` prefers entity (the
+    -- `entityForModifiers or entity` , for an enemy ult particle on Sniper,
+    -- this set ev.caster = Sniper (target), wrong. Provide both fields
+    -- distinctly so subscribers can pick. `caster` now prefers entity (the
     -- source); `target` exposes entityForModifiers explicitly.
     local source = data.entity
     local target = data.entityForModifiers
@@ -289,7 +293,7 @@ function Anim.OnParticleCreate_handler(data)
 
     local event = {
         caster       = source or owner,   -- the spell SOURCE (was: entityForModifiers)
-        target       = target,             -- the spell TARGET (new in )
+        target       = target,             -- the spell TARGET (new in v6.14.1)
         ability_name = sig.ability,
         role         = sig.role,
         raw          = data,

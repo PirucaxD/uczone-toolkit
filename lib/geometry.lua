@@ -1,247 +1,319 @@
 ---@meta
----lib/geometry.lua - 2D position, distance and direction helpers.
+---lib/geometry.lua , generic 2D position / distance / prediction helpers.
 ---
----Hero-agnostic and side-effect free. Every function takes entities or
----Vectors explicitly - nothing reads hero state on its own.
+---Hero-agnostic. All functions take entity or vector args explicitly
+---(no implicit hero-state reads).
 ---
----Dota is played on a flat plane, so the math here is 2D: the z (height)
----component is carried through positions but ignored for distance and
----angle. Distances are in Hammer units, angles in degrees.
----
----The plain distance/direction calls delegate to the native `Vector`
----methods, so the heavy math runs in the engine rather than in Lua. What
----this lib adds on top is the entity-or-Vector argument handling and the
----parts the native class does not cover: cone tests and segment collision.
----
----Anything handed a bad value returns a sensible default - math.huge for
----a distance, nil for a point - instead of crashing, so call sites can
----skip the nil-check and just use `... or fallback`.
+---Extracted from Sniper.lua v6.15.112 to reduce main-chunk local count.
 
 local Geometry = {}
 
-local sqrt, cos, sin, acos = math.sqrt, math.cos, math.sin, math.acos
-local pi = math.pi
-local DEG = 180 / pi
-local RAD = pi / 180
-
-----------------------------------------------------------------------------
--- position normalization
-----------------------------------------------------------------------------
-
----Resolve an argument to a position Vector. Accepts a live entity (reads
----its origin), a Vector (returned as-is), or nil (returns nil). This is
----what lets every helper below take "an entity or a point" interchangeably.
----@param e userdata|nil  entity or Vector
----@return userdata|nil   Vector, or nil
-function Geometry.pos(e)
-    if e == nil then return nil end
-    if Entity and Entity.IsEntity and Entity.IsEntity(e) then
-        return Entity.GetAbsOrigin(e)
-    end
-    -- assume it is already a Vector; probe a field behind pcall so a
-    -- userdata of some other type can't blow up the caller
-    local ok, x = pcall(function() return e.x end)
-    if ok and x ~= nil then return e end
-    return nil
-end
-
-----------------------------------------------------------------------------
--- distance
-----------------------------------------------------------------------------
-
----2D distance between two points/entities. math.huge if either is invalid.
----@param a userdata|nil
----@param b userdata|nil
----@return number
-function Geometry.dist2d(a, b)
-    local pa, pb = Geometry.pos(a), Geometry.pos(b)
+---2D distance between two entities.
+---@param a userdata|nil first entity
+---@param b userdata|nil second entity
+---@return number distance, math.huge if either entity is nil
+function Geometry.dist_between(a, b)
+    if not a or not b then return math.huge end
+    local pa = Entity.GetAbsOrigin(a)
+    local pb = Entity.GetAbsOrigin(b)
     if not pa or not pb then return math.huge end
+    -- Distance2D over (pa - pb):Length2D(): one native call, no temp Vector.
     return pa:Distance2D(pb)
 end
 
--- Aliases - same function, different mental model at the call site.
-Geometry.dist_between = Geometry.dist2d
-Geometry.dist_from_to = Geometry.dist2d
-
----Squared 2D distance - skip the sqrt when you only need to compare two
----distances against each other or against a fixed radius.
----@param a userdata|nil
----@param b userdata|nil
----@return number
-function Geometry.dist2d_sqr(a, b)
-    local pa, pb = Geometry.pos(a), Geometry.pos(b)
-    if not pa or not pb then return math.huge end
-    return pa:DistanceSqr2D(pb)
-end
-
----True if `b` is within `range` units of `a` (cheap - squared compare).
----@param a userdata|nil
----@param b userdata|nil
----@param range number
----@return boolean
-function Geometry.within(a, b, range)
-    local pa, pb = Geometry.pos(a), Geometry.pos(b)
-    if not pa or not pb then return false end
-    return pa:IsInRange2D(pb, range)
-end
-
-----------------------------------------------------------------------------
--- directions and points
-----------------------------------------------------------------------------
-
----Normalized 2D direction Vector pointing from `from` to `to` (z = 0).
----Returns nil when the two points coincide (no meaningful direction).
+---2D distance from one entity to another (alias of dist_between, but
+---with an explicit "from → to" mental model for callers used to that).
 ---@param from userdata|nil
 ---@param to userdata|nil
----@return userdata|nil
-function Geometry.direction(from, to)
-    local pf, pt = Geometry.pos(from), Geometry.pos(to)
-    if not pf or not pt then return nil end
-    local dx, dy = pt.x - pf.x, pt.y - pf.y
-    local len = sqrt(dx * dx + dy * dy)
-    if len < 1e-6 then return nil end
-    return Vector(dx / len, dy / len, 0)
-end
-
----Midpoint between two points/entities.
----@param a userdata|nil
----@param b userdata|nil
----@return userdata|nil
-function Geometry.midpoint(a, b)
-    local pa, pb = Geometry.pos(a), Geometry.pos(b)
-    if not pa or not pb then return nil end
-    return pa:Lerp(pb, 0.5)
-end
-
----A point `distance` units past `to`, continuing along the from->to line.
----Negative `distance` pulls back toward `from`. Handy for placing a knock-
----back cast behind a target, or an over-shoot aim point.
----@param from userdata|nil
----@param to userdata|nil
----@param distance number
----@return userdata|nil
-function Geometry.extend(from, to, distance)
-    local pt = Geometry.pos(to)
-    local dir = Geometry.direction(from, to)
-    if not pt or not dir then return pt end
-    return Vector(pt.x + dir.x * distance,
-                  pt.y + dir.y * distance, pt.z)
-end
-
----Clamp `point` so it is at most `max_dist` units from `origin`. If it is
----already within range it is returned unchanged. This is the Blink-Dagger
----rule: an order past the dagger's range lands at the range limit.
----@param origin userdata|nil
----@param point userdata|nil
----@param max_dist number
----@return userdata|nil
-function Geometry.clamp_distance(origin, point, max_dist)
-    local po, pp = Geometry.pos(origin), Geometry.pos(point)
-    if not po or not pp then return pp end
-    local dx, dy = pp.x - po.x, pp.y - po.y
-    local len = sqrt(dx * dx + dy * dy)
-    if len <= max_dist or len < 1e-6 then return pp end
-    local s = max_dist / len
-    return Vector(po.x + dx * s, po.y + dy * s, pp.z)
-end
-
----Rotate a 2D vector (or the offset of a point from the origin) by
----`degrees`, counter-clockwise. Pass a direction Vector to swivel an aim.
----@param vec userdata|nil  a Vector (treated as an offset from 0,0)
----@param degrees number
----@return userdata|nil
-function Geometry.rotate(vec, degrees)
-    if not vec then return nil end
-    local a = degrees * RAD
-    local c, s = cos(a), sin(a)
-    return Vector(vec.x * c - vec.y * s,
-                  vec.x * s + vec.y * c, vec.z or 0)
-end
-
-----------------------------------------------------------------------------
--- angles
-----------------------------------------------------------------------------
-
----The angle in degrees (0-180) at `vertex`, formed by the rays
----vertex->`a` and vertex->`b`. Returns 0 when either ray has no length.
----@param a userdata|nil
----@param vertex userdata|nil
----@param b userdata|nil
 ---@return number
-function Geometry.angle_between(a, vertex, b)
-    local pa, pv, pb = Geometry.pos(a), Geometry.pos(vertex), Geometry.pos(b)
-    if not pa or not pv or not pb then return 0 end
-    -- native AngleBetween2D returns radians; the angle is taken at the
-    -- middle argument, which is our vertex
-    return pa:AngleBetween2D(pv, pb) * DEG
+function Geometry.dist_from_to(from, to)
+    return Geometry.dist_between(from, to)
 end
 
----True if `point` falls inside the cone with its tip at `apex`, opening
----along `aim_dir`, with a half-angle of `half_angle_deg` and reaching out
----to `max_range`. A `max_range` of nil or 0 means unbounded range.
----Useful for "is this enemy in front of me" / will-a-cone-spell-hit checks.
----@param apex userdata|nil
----@param aim_dir userdata|nil   a direction Vector (need not be normalized)
----@param point userdata|nil
----@param half_angle_deg number
----@param max_range number|nil
----@return boolean
-function Geometry.point_in_cone(apex, aim_dir, point, half_angle_deg, max_range)
-    local pa, pp = Geometry.pos(apex), Geometry.pos(point)
-    if not pa or not pp or not aim_dir then return false end
-    local dx, dy = pp.x - pa.x, pp.y - pa.y
-    local len = sqrt(dx * dx + dy * dy)
-    if len < 1e-6 then return true end          -- point sits on the apex
-    if max_range and max_range > 0 and len > max_range then return false end
-    local alen = sqrt(aim_dir.x * aim_dir.x + aim_dir.y * aim_dir.y)
-    if alen < 1e-6 then return false end
-    local dot = (dx * aim_dir.x + dy * aim_dir.y) / (len * alen)
-    if dot > 1 then dot = 1 elseif dot < -1 then dot = -1 end
-    return (acos(dot) * DEG) <= half_angle_deg
+---Predicted target position `lead_s` seconds ahead, from the target's
+---actual VELOCITY VECTOR.
+---
+---Returns `nil` when the target is unusable (nil / not an Entity / no
+---position). Callers handle this with `... or fallback` (every Sniper
+---call site does `Geom.lead_target_pos(...) or c.target_pos`).
+---Returns the target's CURRENT position (no lead) when the target is
+---valid but not actually moving.
+---
+---v6.15.125 REWRITE , the old model was mathematically wrong. It used
+---`NPC.GetMoveSpeed`, which is a move-speed STAT (≈285-330 for any hero,
+---non-zero while standing still), projected along the facing yaw. So a
+---STATIONARY target had its zone placed `GetMoveSpeed * lead_s` (~450u
+---at lead 1.5s) off-centre in its facing direction, and a moving target
+---had the lead pointed along facing rather than travel (wrong whenever
+---facing ≠ motion). The `mvspeed < 200` gate never caught stationary
+---units because the stat itself is ~300.
+---
+---The model now reads the engine's true velocity vector via
+---`Entity.GetField(target, "m_vecVelocity")`: zero velocity → zero lead
+---(a stationary target keeps its centre), real velocity → correct
+---travel direction and speed. `future = pos + velocity * lead_s`.
+---Pattern proven in the Windranger 2 third-party script (Shackleshot
+---leads). `m_vecVelocity` is an undocumented Source 2 field , pcall-
+---guarded; the fallback (facing × move-speed, only while a move order
+---is live) is the old model but at least gated so it never leads a
+---standing unit.
+---
+---@param target userdata|nil target entity
+---@param me userdata|nil caster entity (unused; kept for API stability)
+---@param lead_s number lead time in seconds
+---@return userdata|nil predicted Vector position, or nil if target invalid
+function Geometry.lead_target_pos(target, me, lead_s)
+    if not target or not Entity.IsEntity(target) then return nil end
+    local tpos = Entity.GetAbsOrigin(target)
+    if not tpos then return nil end
+
+    -- Primary: the engine's real velocity vector.
+    local vel
+    local ok, v = pcall(Entity.GetField, target, "m_vecVelocity")
+    if ok and v and v.Length and v:Length() > 5 then
+        vel = v
+    elseif NPC.IsRunning and NPC.IsRunning(target) then
+        -- Fallback (velocity field unavailable): facing × move-speed,
+        -- but ONLY while a move order is live so a standing unit gets
+        -- no lead.
+        local rot = Entity.GetRotation and Entity.GetRotation(target)
+        local f   = rot and rot.GetForward and rot:GetForward()
+        if f and f.Normalized then
+            local n  = f:Normalized()
+            local ms = (NPC.GetMoveSpeed and NPC.GetMoveSpeed(target)) or 0
+            vel = Vector((n.x or 0) * ms, (n.y or 0) * ms, 0)
+        end
+    end
+    if not vel then return tpos end
+
+    return Vector(tpos.x + (vel.x or 0) * lead_s,
+                  tpos.y + (vel.y or 0) * lead_s,
+                  tpos.z)
 end
 
 ----------------------------------------------------------------------------
--- segments - collision math for line/skillshot reasoning
+-- smoothed velocity prediction (vel_hist) + AoE-coverage placement
+-- Added 2026-05-28. Hero-agnostic; mirrors the inline sample_velocities /
+-- predict_pos model proven in Sniper (Sniper keeps its own inline copy for now;
+-- see Sniper/PREDICTION_LIB_MIGRATION.md). Module-level vel_hist state is shared
+-- across all consumers via Lua's require-cache; call SampleVelocities once per
+-- tick from a consumer's OnUpdateEx.
 ----------------------------------------------------------------------------
 
----The point on segment `a`->`b` closest to `p`. Clamped to the segment, so
----the result is never past either endpoint.
----@param a userdata|nil
----@param b userdata|nil
----@param p userdata|nil
----@return userdata|nil
-function Geometry.closest_point_on_segment(a, b, p)
-    local pa, pb, pp = Geometry.pos(a), Geometry.pos(b), Geometry.pos(p)
-    if not pa or not pb or not pp then return nil end
-    local abx, aby = pb.x - pa.x, pb.y - pa.y
-    local len2 = abx * abx + aby * aby
-    if len2 < 1e-6 then return pa end           -- degenerate segment
-    local t = ((pp.x - pa.x) * abx + (pp.y - pa.y) * aby) / len2
-    if t < 0 then t = 0 elseif t > 1 then t = 1 end
-    return Vector(pa.x + abx * t, pa.y + aby * t, pa.z)
+local MS_GEO = Enum.ModifierState
+local VEL_HIST_N = 6      -- ring-buffer samples (~0.2-0.3s at 20-30Hz)
+local vel_hist = {}       -- entity_idx -> { {t,x,y}, ... } (newest last)
+local function geo_now() return GlobalVars.GetCurTime() end
+
+---Record nearby enemy hero positions into the velocity-history ring buffers.
+---A >0.25s vision gap, or a per-tick jump beyond foot speed (700 u/s = a
+---blink/teleport discontinuity), resets that unit's buffer so PredictPos never
+---leads off a phantom velocity.
+---@param me userdata  caster (origin of the radius scan)
+---@param radius number|nil  scan radius (default 1600)
+function Geometry.SampleVelocities(me, radius)
+    if not me or not Entity.IsEntity(me) then return end
+    local list = Entity.GetHeroesInRadius(me, radius or 1600, Enum.TeamType.TEAM_ENEMY)
+    if not list then return end
+    local t = geo_now()
+    for i = 1, #list do
+        local h = list[i]
+        if h and Entity.IsEntity(h) and Entity.IsAlive(h) then
+            local idx = Entity.GetIndex(h)
+            local pos = Entity.GetAbsOrigin(h)
+            if idx and pos then
+                local buf = vel_hist[idx]
+                if buf and #buf > 0 then
+                    local last = buf[#buf]
+                    local gap  = t - last.t
+                    if gap > 0.25 then
+                        buf = nil
+                    else
+                        local dx, dy = pos.x - last.x, pos.y - last.y
+                        local cap = 700 * (gap + 0.05)
+                        if (dx * dx + dy * dy) > (cap * cap) then buf = nil end
+                    end
+                end
+                if not buf then buf = {}; vel_hist[idx] = buf end
+                buf[#buf + 1] = { t = t, x = pos.x, y = pos.y }
+                while #buf > VEL_HIST_N do table.remove(buf, 1) end
+            end
+        end
+    end
 end
 
----Shortest 2D distance from point `p` to segment `a`->`b`.
----@param a userdata|nil
----@param b userdata|nil
----@param p userdata|nil
----@return number
-function Geometry.dist_to_segment(a, b, p)
-    local cp = Geometry.closest_point_on_segment(a, b, p)
-    if not cp then return math.huge end
-    return Geometry.dist2d(cp, p)
+---Predicted position `lead_s` ahead using the SMOOTHED velocity (averaged over
+---the SampleVelocities buffer), which steadies jitter vs the instantaneous read.
+---Falls back to lead_target_pos (capped at foot speed) when there is no usable
+---history; stationary / hard-CC'd targets get no lead. Returns nil for an
+---invalid target (callers do `... or fallback`).
+---@param target userdata|nil
+---@param lead_s number
+---@return userdata|nil predicted Vector
+function Geometry.PredictPos(target, lead_s)
+    if not target or not Entity.IsEntity(target) then return nil end
+    local tpos = Entity.GetAbsOrigin(target)
+    if not tpos then return nil end
+    local idx = Entity.GetIndex(target)
+    local buf = idx and vel_hist[idx]
+    if buf and #buf >= 2 then
+        local newest, oldest = buf[#buf], buf[1]
+        local dt = newest.t - oldest.t
+        if dt >= 0.05 and (geo_now() - newest.t) < 0.25 then
+            local vx = (newest.x - oldest.x) / dt
+            local vy = (newest.y - oldest.y) / dt
+            if (vx * vx + vy * vy) > 3600 then  -- smoothed speed > 60 u/s
+                return Vector(tpos.x + vx * lead_s, tpos.y + vy * lead_s, tpos.z)
+            end
+            return tpos  -- ~stationary: no lead
+        end
+    end
+    -- buffer-empty fallback: hard-CC = no lead; else instantaneous, foot-capped.
+    if MS_GEO and NPC.HasState and (
+          NPC.HasState(target, MS_GEO.MODIFIER_STATE_STUNNED)
+       or NPC.HasState(target, MS_GEO.MODIFIER_STATE_ROOTED)
+       or NPC.HasState(target, MS_GEO.MODIFIER_STATE_FROZEN)) then
+        return tpos
+    end
+    local lp = Geometry.lead_target_pos(target, nil, lead_s)
+    if not lp then return tpos end
+    local lx, ly = (lp.x or 0) - tpos.x, (lp.y or 0) - tpos.y
+    local cap = 700 * lead_s
+    if (lx * lx + ly * ly) > cap * cap then return tpos end
+    return lp
 end
 
----True if the segment `a`->`b` passes within `radius` of `center`. This is
----the test for "does this line/projectile path clip a unit" - feed it the
----unit's position and its bounding-hull radius (plus the projectile width).
----@param a userdata|nil
----@param b userdata|nil
----@param center userdata|nil
----@param radius number
----@return boolean
-function Geometry.segment_hits_circle(a, b, center, radius)
-    return Geometry.dist_to_segment(a, b, center) <= radius
+---Best AoE center to cover the most of `units` (each predicted `lead_s` ahead)
+---within `radius`. If `must_cover` is given, only centers within `radius` of
+---that unit's predicted position are considered (it is always caught) and the
+---result maximizes the OTHERS around it. Candidate centers include points
+---BETWEEN units (not just unit positions), so two units up to 2*radius apart
+---can both be caught. Returns (center Vector, count) or (nil, 0).
+---@param units userdata[]  candidate enemy units
+---@param radius number  AoE radius
+---@param lead_s number  prediction lead
+---@param must_cover userdata|nil  unit that must be covered (e.g. the R target)
+---@return userdata|nil center, integer count
+function Geometry.BestAoeCenter(units, radius, lead_s, must_cover)
+    if not units or #units == 0 then return nil, 0 end
+    local preds = {}
+    for i = 1, #units do
+        local p = Geometry.PredictPos(units[i], lead_s)
+        if p then preds[#preds + 1] = p end
+    end
+    if #preds == 0 then return nil, 0 end
+
+    local anchor = must_cover and Geometry.PredictPos(must_cover, lead_s) or nil
+    if must_cover and not anchor then return nil, 0 end
+
+    local cand = {}
+    if anchor then
+        cand[#cand + 1] = anchor
+        for i = 1, #preds do
+            local d = anchor:Distance2D(preds[i])
+            if d > 1 and d <= 2 * radius then
+                local off = d - radius; if off < 0 then off = 0 end  -- in [0, radius]
+                local f = off / d
+                cand[#cand + 1] = Vector(anchor.x + (preds[i].x - anchor.x) * f,
+                                         anchor.y + (preds[i].y - anchor.y) * f, anchor.z)
+            end
+        end
+    else
+        for i = 1, #preds do cand[#cand + 1] = preds[i] end
+        for i = 1, #preds do
+            for j = i + 1, #preds do
+                if preds[i]:Distance2D(preds[j]) <= 2 * radius then
+                    cand[#cand + 1] = Vector((preds[i].x + preds[j].x) * 0.5,
+                                             (preds[i].y + preds[j].y) * 0.5, preds[i].z)
+                end
+            end
+        end
+    end
+
+    local best_c, best_n = nil, 0
+    for c = 1, #cand do
+        local center = cand[c]
+        if not anchor or center:Distance2D(anchor) <= radius + 1 then
+            local n = 0
+            for i = 1, #preds do
+                if center:Distance2D(preds[i]) <= radius then n = n + 1 end
+            end
+            if n > best_n then best_n, best_c = n, center end
+        end
+    end
+    return best_c, best_n
+end
+
+---Best aim point for a LINE/projectile skill cast from `source`: the direction
+---whose width band (half_width) and `length` cross the most of `units` (each
+---predicted `lead_s` ahead). The line analog of BestAoeCenter. If `must_cover`
+---is given, only directions whose band contains that unit are considered.
+---Candidate directions are toward each predicted unit (+ toward must_cover).
+---Returns (aim_point Vector at `length` along the best direction, count) or
+---(nil, 0). Cast the skill at the returned point to aim the line that way.
+---@param units userdata[]  candidate enemy units
+---@param source userdata  caster position (Vector)
+---@param half_width number  half the line width
+---@param length number  line length
+---@param lead_s number  prediction lead
+---@param must_cover userdata|nil  unit the line must contain
+---@return userdata|nil aim_point, integer count
+function Geometry.BestLineAim(units, source, half_width, length, lead_s, must_cover)
+    if not units or #units == 0 or not source then return nil, 0 end
+    local sx, sy, sz = source.x, source.y, source.z
+    local preds = {}
+    for i = 1, #units do
+        local p = Geometry.PredictPos(units[i], lead_s)
+        if p then preds[#preds + 1] = p end
+    end
+    if #preds == 0 then return nil, 0 end
+    local cover = must_cover and Geometry.PredictPos(must_cover, lead_s) or nil
+    if must_cover and not cover then return nil, 0 end
+
+    local hw2 = half_width * half_width
+    local function on_line(ux, uy, p)
+        local rx, ry = p.x - sx, p.y - sy
+        local proj = rx * ux + ry * uy
+        if proj < 0 or proj > length then return false end
+        return ((rx * rx + ry * ry) - proj * proj) <= hw2
+    end
+
+    -- Candidate aim directions. "Toward each unit" alone under-covers a 2D spread
+    -- (it can only aim AT a unit); add the centroid and pairwise midpoints so the
+    -- line can thread BETWEEN units and cross more of a non-radial cluster.
+    local cands = {}
+    for i = 1, #preds do cands[#cands + 1] = preds[i] end
+    if #preds >= 2 then
+        local cx, cy = 0, 0
+        for i = 1, #preds do cx = cx + preds[i].x; cy = cy + preds[i].y end
+        cands[#cands + 1] = Vector(cx / #preds, cy / #preds, preds[1].z)  -- centroid
+        for i = 1, #preds do
+            for j = i + 1, #preds do
+                cands[#cands + 1] = Vector((preds[i].x + preds[j].x) * 0.5,
+                                           (preds[i].y + preds[j].y) * 0.5, preds[i].z)
+            end
+        end
+    end
+    if cover then cands[#cands + 1] = cover end
+
+    local best_ux, best_uy, best_n
+    for c = 1, #cands do
+        local dx, dy = cands[c].x - sx, cands[c].y - sy
+        local len = math.sqrt(dx * dx + dy * dy)
+        if len > 1 then
+            local ux, uy = dx / len, dy / len
+            if not cover or on_line(ux, uy, cover) then
+                local n = 0
+                for i = 1, #preds do if on_line(ux, uy, preds[i]) then n = n + 1 end end
+                if not best_n or n > best_n then best_n, best_ux, best_uy = n, ux, uy end
+            end
+        end
+    end
+    if not best_ux then
+        if cover then return Vector(cover.x, cover.y, cover.z), 1 end
+        return nil, 0
+    end
+    return Vector(sx + best_ux * length, sy + best_uy * length, sz), best_n or 0
 end
 
 return Geometry

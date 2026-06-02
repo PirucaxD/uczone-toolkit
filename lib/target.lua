@@ -1,5 +1,5 @@
 ---@meta
----lib/target.lua - composable predicate helpers.
+---lib/target.lua , composable predicate helpers.
 ---
 ---Per project plan: there is no `Target.Pick()`. Heroes compose these
 ---predicates inline because target-picking is per-hero (Tier 3) and
@@ -9,9 +9,8 @@
 ---numeric helpers). Eliminates nil-checks at call sites.
 ---
 ---Protection helpers use framework primitives (`NPC.IsLinkensProtected`,
----`NPC.IsMirrorProtected`, `NPC.HasAegis`, `Humanizer.IsSafeTarget`)
----rather than a hand-rolled `has-item + cooldown` check - the framework
----already knows about charges, break, and edge cases you would miss.
+---`NPC.IsMirrorProtected`, `NPC.HasAegis`, `Humanizer.IsSafeTarget`); these
+---supersede hand-rolled `has-item + cooldown` composition.
 
 local Target = {}
 
@@ -193,7 +192,7 @@ end
 ----------------------------------------------------------------------------
 
 ---Will `entity` be invulnerable (or out-of-game) at any point in the next
----`ms` milliseconds? v1 reads state durations only - any currently-active
+---`ms` milliseconds? v1 reads state durations only , any currently-active
 ---invuln state means the answer is yes for any positive window. Cast-window
 ---prediction (self-cast Eul / Manta dispel-into-invuln) is a Tier 2 hook
 ---(`lib/timing.lua`) and not folded in here.
@@ -261,12 +260,12 @@ function Target.EffectiveHpVs(target, source, damage_type)
 end
 
 ----------------------------------------------------------------------------
--- combat-state predicates for combo/sequence decisions
+-- v6.8 , combat-state predicates for combo/sequence decisions
 ----------------------------------------------------------------------------
 
 -- Items the target could use to escape a committed ult: invuln, dispel,
--- magic-immune. derived from threat_data.SAVE_KIND instead
--- of hardcoded - when SAVE_KIND changes (e.g. BKB gained dispel_basic),
+-- magic-immune. v6.13 Cross F#7: derived from threat_data.SAVE_KIND instead
+-- of hardcoded , when SAVE_KIND changes (e.g. v6.7 BKB gained dispel_basic),
 -- this list updates automatically. Picks items whose kinds include any of
 -- {invuln, dispel_basic, reflect_target, magic_immune}.
 local TD = require("lib.threat_data")
@@ -286,20 +285,19 @@ function Target.HasReadyEscapeItem(e)
     return false
 end
 
---- window-aware escape detection. Returns one of:
----  `"active"` - a dispel/immunity buff is currently on the target. R wasted.
----  `"ready"`  - at least one escape item off CD. Likely popped during our cast.
----  `"soon"`   - no escape ready, but at least one comes off CD within
----               `soon_window_s` (default 2.4s - tune to your spell's cast
----               time plus a buffer).
----               Pro behavior: target will pop dispel as R impacts -> R wasted.
----  `"long"`   - escape item(s) exist but all on CD beyond the cast window.
----  `"none"`   - target has no escape items at all.
+---v6.12: window-aware escape detection. Returns one of:
+---  `"active"` , a dispel/immunity buff is currently on the target. R wasted.
+---  `"ready"`  , at least one escape item off CD. Likely popped during our cast.
+---  `"soon"`   , no escape ready, but at least one comes off CD within
+---               `soon_window_s` (default 2.4s ~= Sniper R cast point + buffer).
+---               Pro behavior: target will pop dispel as R impacts → R wasted.
+---  `"long"`   , escape item(s) exist but all on CD beyond the cast window.
+---  `"none"`   , target has no escape items at all.
 ---
 ---Hedges:
 ---  - If target has Refresher Orb / Shard, downgrade `"long"` to `"soon"`
 ---    (Refresher could snap CDs back; defensive assumption).
----  - If target last visible > 3s ago, return `"ready"` (stale fog data is not
+---  - If target last visible > 3s ago, return `"ready"` (stale fog data ≠
 ---    safety; assume worst case, consistent with project fog-data rule).
 ---@param e             userdata|nil
 ---@param soon_window_s number|nil   default 2.4
@@ -341,38 +339,36 @@ function Target.EscapeItemWindowState(e, soon_window_s)
 end
 
 ---Target is actively moving AWAY from `me`. Heuristic: target is running
----AND its facing is in the rough "away from me" hemisphere (angle > 90 deg).
+---AND its facing is in the rough "away from me" hemisphere (angle > 90°).
 ---Used to bias toward grenade-poke / shrap-zone setups (kite punishment).
 ---@param target userdata|nil
 ---@param me userdata|nil
 ---@return boolean
--- now also velocity-tracks distance from `me` over recent frames.
--- A target who is running orbital-laterally (facing 90 deg off-axis from me but
+-- v6.15 D3: now also velocity-tracks distance from `me` over recent frames.
+-- A target who is running orbital-laterally (facing 90° off-axis from me but
 -- not actually increasing distance) is no longer mis-classified as kiting.
 -- Cache lives on `Target` itself, keyed by entity index.
--- opportunistic GC + pause-time skew + EntIndex reuse handling.
-local _kite_track = {}  -- idx -> { last_dist_sqr, last_t, spawn_t }
+-- v6.15.2 M2: opportunistic GC + pause-time skew + EntIndex reuse handling.
+local _kite_track = {}  -- idx → { last_dist_sqr, last_t, spawn_t }
 local _kite_last_gc = 0
 function Target.IsKitingUs(target, me)
     if not target or not me or not Entity.IsNPC(target) then return false end
     if not NPC.IsRunning(target) then return false end
     local m_pos = Entity.GetAbsOrigin(me)
     if not m_pos then return false end
-    -- NPC.FindRotationAngle returns RADIANS, not degrees. Compare against a
-    -- radian threshold (or convert via math.deg before comparing to 90).
+    -- v6.15.232: FindRotationAngle is radians , math.deg before the compare.
     local angle_to_me = math.deg(math.abs(NPC.FindRotationAngle(target, m_pos)))
     if angle_to_me <= 90 then return false end  -- not even facing away
 
     -- Velocity check: is distance from me increasing over the last ~0.25s?
     local t_pos = Entity.GetAbsOrigin(target)
-    if not t_pos then return false end
     local dx = t_pos.x - m_pos.x
     local dy = t_pos.y - m_pos.y
     local cur_d2 = dx*dx + dy*dy
     local idx = Entity.GetIndex(target)
     local t_now = GlobalVars.GetCurTime()
     local rec = _kite_track[idx]
-    -- opportunistic GC every 5s - drop entries where last_t is
+    -- v6.15.2 M2: opportunistic GC every 5s , drop entries where last_t is
     -- older than 30s (entity dead / fog / index reused for a different
     -- entity since). Cheap pass; runs at most once per 5s of game time.
     if (t_now - _kite_last_gc) > 5.0 then
@@ -381,7 +377,7 @@ function Target.IsKitingUs(target, me)
             if (t_now - r.last_t) > 30 then _kite_track[k] = nil end
         end
     end
-    -- dead-target check - if the entity died and respawned
+    -- v6.15.2 M2: dead-target check , if the entity died and respawned
     -- (Source reuses EntIndex), the cached `last_dist_sqr` is stale. Drop
     -- the record when the target shows signs of newness (alive again after
     -- being unseen for > 5s).
@@ -409,11 +405,10 @@ function Target.IsRightClicking(target, me)
     local t_pos = Entity.GetAbsOrigin(target)
     local m_pos = Entity.GetAbsOrigin(me)
     if not t_pos or not m_pos then return false end
-    -- Include attack-range bonuses (Dragon Lance, Hurricane Pike, talents).
-    -- NPC.GetAttackRange returns the base range; bonus is additive.
-    local base = NPC.GetAttackRange(target) or 600
-    local bonus = (NPC.GetAttackRangeBonus and NPC.GetAttackRangeBonus(target)) or 0
-    local atk_range = base + bonus
+    -- v6.15.234: GetAttackRange is BASE only; add the item/talent bonus
+    -- (Dragon Lance, Hurricane Pike) so a ranged carry is not under-ranged.
+    local atk_range = (NPC.GetAttackRange(target) or 600)
+        + (NPC.GetAttackRangeBonus and NPC.GetAttackRangeBonus(target) or 0)
     local dx = t_pos.x - m_pos.x
     local dy = t_pos.y - m_pos.y
     return (dx*dx + dy*dy) <= (atk_range + 100) * (atk_range + 100)
