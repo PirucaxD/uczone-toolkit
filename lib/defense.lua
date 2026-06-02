@@ -1,0 +1,801 @@
+---@meta
+---lib/defense.lua - generic Layer-2 save dispatcher (Tier-2 extraction).
+---
+---Pulls the chain-resolution + chain-walk + throttle bookkeeping out of the
+---per-hero defense layer. The DATA (chain tables, SAVE_FIRE map, override
+---tables, filter sets) stays hero-side; the ALGORITHM lives here. Each hero
+---calls Defense.New{cfg} once at init and keeps thin adapters around the
+---returned dispatcher.
+---
+---No cross-hero state. Each dispatcher captures one cfg and operates only on
+---the throttle_state / armed_threats refs the hero passes in.
+---
+---Audit-trail of equivalence vs the pre-extraction inline path:
+---  - ResolveSaveOrder mirrors Lina pre-v0.5.0 resolve_save_order (anim ->
+---    hero -> patched_recommended -> category -> default; first hit wins).
+---  - TrySaveSelf mirrors the chain walk: same skip reasons, same order,
+---    same reserve-penalty + concurrent-threat math, same tlog event names
+---    so log greps keep working unchanged.
+---  - CanFire / MarkFired match the inline LAYER2_REACTION_WINDOW gate.
+---
+---v0.5.40 TIER 0 (dispatcher unification):
+---  - Dispatcher.in_flight_locks / in_flight_locks_ally: per-threat lock map
+---    keyed [target_idx][canonical_mod][caster_idx]. Enforces the v0.5.7 E13
+---    single-save-per-engagement invariant structurally; replaces the
+---    Dedup.threat_already_responded 2.0s window that misses slow-travel
+---    threats (Bara WW+Pike, Sniper Assassinate D-key double-fire).
+---  - TryAcquireLock / ReleaseLock / ForceNextDispatch: identity-by-handle
+---    lock primitives. Lock key tuple (target_idx, canonical_mod, caster_idx)
+---    distinguishes casters per v0.5.14 BL-A5/BL-B7 (two casters arming the
+---    same modifier are two concurrent threats).
+---  - Dispatch / DispatchAlly: new top-level entries that wrap chain-walk in
+---    a lock-acquire / on-success-hold cycle. Self-domain and ally-domain
+---    locks live in separate maps (Lotus-on-self does NOT block Glimmer-on-
+---    ally for the same threat).
+---  - TrySaveSelf is now a thin compat wrapper around Dispatch for existing
+---    Lina call sites; the Routing phase migrates direct callers.
+---  - ResolveSaveOrder gains an optional ctx table for GAP-3 (FC chain
+---    demotion under fs_shard_window). Hero populates ctx; lib reads it.
+---  - cfg.canonicalize_mod (mod -> string) and cfg.eta_resolver
+---    (canonical_mod -> resolver_fn) are new hero-supplied accessors. Both
+---    optional; absence falls through to behavioural-neutral defaults
+---    (identity canonicalization, 2.0s fallback lock TTL).
+---
+---See Lina/LIB_DEFENSE_EXTRACTION.md for design + Sniper migration plan.
+
+local Defense = {}
+
+-- v0.5.39 P3-LOW-magic: reserve-skip / concurrent-penalty thresholds are
+-- passed in via cfg (cfg.reserve_skip_floor / cfg.concurrent_penalty) rather
+-- than baked in here, so heroes can tune them independently. The hero-side
+-- source of truth lives in the hero file's module-level constants (e.g. Lina:
+-- state.RESERVE_SKIP_FLOOR / state.CONCURRENT_PENALTY). The hero file's
+-- chain-peek helper (armed_chain_peek in Lina.lua) MUST mirror these same
+-- values when previewing the dispatcher's gate; v0.5.39 M1 routed the count
+-- itself through Dispatcher:CountConcurrentExcluding so peek+dispatch share
+-- one method, but the thresholds still need to be kept in lock-step.
+local Dispatcher = {}
+Dispatcher.__index = Dispatcher
+
+-- v0.5.40 TIER 0 defaults. lock_buffer_s default per design lock_ttl_math:
+-- reaction_window (0.1s) + engine_apply_slack (0.2s) = 0.3s. Hard cap 6.0s
+-- and floor 0.4s clamp every resolver result. fallback_lock_ttl_s default
+-- 2.0s matches legacy Dedup.THREAT_WINDOW for behaviour-neutral fallback on
+-- uncatalogued canonical_mods.
+local DEFAULT_LOCK_BUFFER_S      = 0.3
+local DEFAULT_FALLBACK_LOCK_TTL  = 2.0
+local LOCK_TTL_HARD_CAP_S        = 6.0
+local LOCK_TTL_FLOOR_S           = 0.4
+
+---Create a dispatcher bound to one hero's defense config.
+---@param cfg table see Lina/LIB_DEFENSE_EXTRACTION.md for the cfg field list
+---  v0.5.40 TIER 0 additions (all optional, backward-compatible):
+---    cfg.canonicalize_mod   fun(mod:string|nil):string|nil
+---        Hero-supplied alias collapser. Maps modifier_pudge_dismember_pull and
+---        modifier_pudge_dismember to one canonical string. nil/missing means
+---        identity (the mod string IS the canonical key).
+---    cfg.eta_resolver       table<string, fun(caster, target, armed_entry, ability_handle, now_t):number>
+---        Map canonical_mod -> resolver_fn returning seconds_until_resolution
+---        (>=0). Missing entry triggers cfg.eta_resolver_default; missing both
+---        triggers fallback_lock_ttl_s.
+---    cfg.eta_resolver_default fun(caster, target, armed_entry, ability_handle, now_t):number
+---        Fallback resolver for any canonical_mod not in cfg.eta_resolver.
+---    cfg.lock_buffer_s      number  (default 0.3)
+---        Buffer added to resolver eta before the lock expiry timestamp.
+---        Covers cfg.reaction_window throttle (~0.1) + engine apply slack
+---        (~0.2). See design lock_ttl_math note.
+---    cfg.fallback_lock_ttl_s number  (default 2.0)
+---        Used when neither eta_resolver[mod] nor eta_resolver_default
+---        produces a value. Matches legacy Dedup.THREAT_WINDOW.
+---    cfg.ability_handle     fun(ability_name:string|nil):any|nil
+---        Optional. Returns the engine ability handle for an ability_name so
+---        resolvers can read GetCastPoint / GetChannelTime live. nil-tolerant.
+---@return table dispatcher
+function Defense.New(cfg)
+    local self = setmetatable({ cfg = cfg }, Dispatcher)
+    -- v0.5.40 TIER 0: lock domains. Self-domain blocks Lina-on-Lina double
+    -- saves (Bara WW+Pike, Sniper Assassinate D). Ally-domain is isolated so
+    -- a self-save (Lotus) does NOT silence a same-threat ally-save (Glimmer
+    -- on ally). Structure: [target_idx][canonical_mod][caster_idx] = entry.
+    self.in_flight_locks      = {}
+    self.in_flight_locks_ally = {}
+    -- v0.5.40 TIER 0: per-(target,mod,caster) one-shot bypass flag. Set by
+    -- Dispatcher:ForceNextDispatch and consumed inside Dispatch on the next
+    -- attempt against that key. Replaces the panic-key last_save_t=0 hack
+    -- that the v0.5.37 panic_override_until window used.
+    self._force_bypass        = {}
+    return self
+end
+
+---Resolve the effective save chain for a (threat_mod, category_hint,
+---ability_name) tuple. Returns (chain, is_authoritative); authoritative
+---chains bypass the kind/tether filters during the walk.
+---v0.5.40 GAP-3: optional ctx table lets the hero pass live context that
+---influences chain ordering. Currently consumed:
+---  ctx.fs_shard_window (boolean): when truthy, demote 'lina_flame_cloak' to
+---    the tail of the resolved chain so a shard-window save sequence doesn't
+---    spend FC before BKB/Manta/Eul. Hero populates from FS shard tracker.
+---@param threat_mod string|nil
+---@param category_hint string|nil
+---@param ability_name string|nil
+---@param ctx table|nil  v0.5.40 GAP-3 context hooks; currently fs_shard_window
+---@return table chain, boolean is_authoritative
+function Dispatcher:ResolveSaveOrder(threat_mod, category_hint, ability_name, ctx)
+    local c = self.cfg
+    -- v0.5.13 E4 (HI-3 / PE04-OVERRIDE-WORKS): emit a single diagnostic tlog at
+    -- each return point so operators can read the resolved chain HEAD directly
+    -- from the log. PE04-OVERRIDE-WORKS confirmed LINA_SAVE_OVERRIDES is being
+    -- consulted (BKB > Manta > Eul > Aeon on Duel) but the level-1
+    -- threat_on_self line was reporting the static lib `save=` hint, which
+    -- operators kept reading as the resolved head and concluding the override
+    -- was unconsulted. No behavioural change to the resolver itself; this is
+    -- diagnostic_only. The companion Lina.lua threat_on_self tlog will drop /
+    -- demote that misleading `save = entry.save` field in a sibling patch.
+    local picked, authoritative
+    if ability_name then
+        local ao = c.anim_save_overrides[ability_name]
+        if ao then
+            c.tlog(3, "resolve_save_order_pick", { mod = threat_mod, source = "anim_override", head = ao[1] or "-" })
+            picked, authoritative = ao, true
+        end
+    end
+    if not picked and threat_mod then
+        local hero = c.hero_save_overrides[threat_mod]
+        if hero then
+            c.tlog(3, "resolve_save_order_pick", { mod = threat_mod, source = "hero_override", head = hero[1] or "-" })
+            picked, authoritative = hero, true
+        end
+    end
+    if not picked and threat_mod then
+        -- v0.5.14 E8 (BL-B2 / BL-B6): split the old single "category_default" head-source
+        -- label into three distinct values (category_default / category_hint / default_chain)
+        -- so operators can tell apart CategoryOf(threat_mod) hits, caller-passed
+        -- category_hint hits, and the terminal default_chain fallthrough. Also adds a
+        -- lib_patched_empty tlog for KFR/Pit-style intentionally-empty RECOMMENDED entries
+        -- that previously fell through silently.
+        local td = c.patched_recommended[threat_mod]
+        if td and #td > 0 then
+            c.tlog(3, "resolve_save_order_pick", { mod = threat_mod, source = "lib_patched", head = td[1] or "-" })
+            picked, authoritative = td, false
+        elseif td then
+            c.tlog(3, "resolve_save_order_pick", { mod = threat_mod, source = "lib_patched_empty", head = "-" })
+        end
+        if not picked then
+            local category = c.TD.CategoryOf and c.TD.CategoryOf(threat_mod) or nil
+            if category and c.category_chains[category] then
+                c.tlog(3, "resolve_save_order_pick", { mod = threat_mod, source = "category_default", head = c.category_chains[category][1] or "-" })
+                picked, authoritative = c.category_chains[category], false
+            end
+        end
+    end
+    if not picked and category_hint and c.category_chains[category_hint] then
+        c.tlog(3, "resolve_save_order_pick", { mod = threat_mod, source = "category_hint", head = c.category_chains[category_hint][1] or "-" })
+        picked, authoritative = c.category_chains[category_hint], false
+    end
+    if not picked then
+        c.tlog(3, "resolve_save_order_pick", { mod = threat_mod, source = "default_chain", head = c.default_chain[1] or "-" })
+        picked, authoritative = c.default_chain, false
+    end
+
+    -- v0.5.40 GAP-3: FC chain demotion under shard window. When the hero
+    -- signals an active fs_shard_window via ctx.fs_shard_window, push
+    -- 'lina_flame_cloak' to the chain tail so a shard-amped FS spend is not
+    -- pre-empted by a FC burn. Builds a NEW chain table to keep the cfg
+    -- override / category / default tables untouched (those are module-local
+    -- in the hero file; mutating them would leak across calls).
+    if ctx and ctx.fs_shard_window and picked then
+        local has_fc = false
+        for i = 1, #picked do
+            if picked[i] == "lina_flame_cloak" then has_fc = true break end
+        end
+        if has_fc then
+            local demoted = {}
+            for i = 1, #picked do
+                if picked[i] ~= "lina_flame_cloak" then
+                    demoted[#demoted + 1] = picked[i]
+                end
+            end
+            demoted[#demoted + 1] = "lina_flame_cloak"
+            c.tlog(3, "resolve_save_order_fc_demote", { mod = threat_mod, head = demoted[1] or "-", reason = "fs_shard_window" })
+            return demoted, authoritative
+        end
+    end
+
+    return picked, authoritative
+end
+
+---Throttle gate. Returns true iff defense is enabled AND the reaction window
+---has elapsed since the last save dispatch.
+---@return boolean
+function Dispatcher:CanFire()
+    local c = self.cfg
+    if not c.defense_enabled() then return false end
+    if (c.now() - (c.throttle_state.last_save_t or 0)) < c.reaction_window then
+        return false
+    end
+    return true
+end
+
+---Mark a save as just-fired (writes throttle_state.last_save_t). Idempotent.
+---v0.5.39 P1-LAST-SAVE-TGT: the throttle_state.last_save_target write has been
+---removed (Sniper-port orphan; no Lina-side reader, see Lina.lua state-decl
+---comment near state.last_save_t for history). Method signature preserved.
+---@param threat_caster any  may be nil (kept for signature compatibility)
+function Dispatcher:MarkFired(threat_caster)
+    local c = self.cfg
+    c.throttle_state.last_save_t = c.now()
+end
+
+-- Local helpers for the chain walk. Operate on the cfg so the dispatcher
+-- table itself stays empty besides self.cfg / methods.
+
+local function save_counters_ok(c, save_name, threat_mod)
+    if not threat_mod or not c.TD.SaveCounters then return true end
+    return c.TD.SaveCounters(save_name, threat_mod)
+end
+
+local function tether_breaks_ok(c, save_name, threat_mod, threat_caster)
+    if not threat_mod or not c.TD.WillTetherBreak then return true end
+    local d = (threat_caster and c.dist_to and c.dist_to(threat_caster)) or math.huge
+    return c.TD.WillTetherBreak(save_name, threat_mod, d)
+end
+
+---v0.5.39 M1 (Option A): count armed_threats rows excluding `armed_entry` by
+---entry-handle identity. Single source of truth for the reserve/concurrent
+---penalty math; Lina armed_chain_peek delegates here so the per-hero peek
+---and the lib chain-walk cannot drift. Pass the live armed_entry on the
+---armed-fire path (Lina.lua armed_threats_tick L1528) so peek+dispatch agree
+---on n=0 for the typical single-armed-threat case. Non-armed call sites
+---(events / persistent / threat_on_self / lotus / line_intercept) pass nil
+---and count all armed rows (legacy behaviour preserved).
+---Entry-handle identity is the correct semantics per v0.5.14 BL-A5/BL-B7:
+---two different casters arming the same modifier must NOT collapse.
+---@param armed_entry table|nil
+---@return integer
+function Dispatcher:CountConcurrentExcluding(armed_entry)
+    local c = self.cfg
+    local n = 0
+    for _, e2 in pairs(c.armed_threats) do
+        if e2 ~= armed_entry then
+            n = n + 1
+        end
+    end
+    return n
+end
+
+-- ============================================================================
+-- v0.5.40 TIER 0: per-threat lock primitives + Dispatch entry points.
+--
+-- Lock domain shape (self.in_flight_locks, self.in_flight_locks_ally):
+--   locks[target_idx][canonical_mod][caster_idx] = {
+--       fire_t       = number,   -- cfg.now() at acquire
+--       ttl          = number,   -- seconds; expiry = fire_t + ttl
+--       save_short   = string|nil, -- save name that fired (populated by Dispatch on success)
+--       intent       = string|nil, -- top-level intent passed to Dispatch
+--       armed_entry  = table|nil,  -- armed_threats row, if armed-fire path
+--   }
+--
+-- Lazy expiry: TryAcquireLock checks fire_t+ttl < now() and overwrites stale
+-- entries silently. Cheaper than a tick sweep; for v0.5.40's expected lock
+-- population (<10 concurrent in any pathological case) the overhead is nil.
+-- ============================================================================
+
+-- Local helper: extract entity index in a nil-tolerant way. cfg.entity_index
+-- is the hero-supplied accessor (Entity.GetIndex wrapper). Falls back to
+-- treating numeric inputs as already-an-index, anything else returns nil so
+-- TryAcquireLock can short-circuit to the unlocked v0.5.39 path.
+local function ent_idx(c, ent)
+    if ent == nil then return nil end
+    if type(ent) == "number" then return ent end
+    if c.entity_index then
+        local ok, idx = pcall(c.entity_index, ent)
+        if ok and type(idx) == "number" then return idx end
+    end
+    return nil
+end
+
+-- Local helper: canonicalize via cfg.canonicalize_mod (hero-supplied alias
+-- collapser). Falls through to identity when cfg.canonicalize_mod is nil
+-- (preserves v0.5.39 behaviour for callers that haven't migrated yet).
+local function canon(c, mod)
+    if mod == nil then return nil end
+    if c.canonicalize_mod then
+        local ok, canonical = pcall(c.canonicalize_mod, mod)
+        if ok and type(canonical) == "string" then return canonical end
+    end
+    return mod
+end
+
+-- Local helper: compose the lock key tuple. Returns three values
+-- (target_idx, canonical_mod, caster_idx) or nil when any leg is
+-- unresolvable. Per v0.5.14 BL-A5/BL-B7 the caster leg is REQUIRED to
+-- distinguish two casters arming the same modifier; nil caster falls
+-- through to the unlocked path (matches the v0.5.39 line-intercept and
+-- fog-projectile behaviour the design doc preserves).
+-- v0.5.40 verifier fix: also reject empty-string canonical so a hero-side
+-- canonicalize_mod that collapses unknowns to "" never bucket-collides
+-- unrelated mods on the same target.
+local function lock_key(c, target_unit, canonical_mod, caster_unit)
+    if not canonical_mod or canonical_mod == "" then return nil end
+    local t_idx = ent_idx(c, target_unit)
+    if not t_idx then return nil end
+    local k_idx = ent_idx(c, caster_unit)
+    if not k_idx then return nil end
+    return t_idx, canonical_mod, k_idx
+end
+
+-- Local helper: fetch a live lock entry from a domain map, expiring stale
+-- entries lazily. Returns the entry table (alive) or nil (none / expired).
+-- Removes expired entries from the map as a side effect.
+local function get_live_lock(c, domain, t_idx, canonical_mod, k_idx)
+    local by_target = domain[t_idx]
+    if not by_target then return nil end
+    local by_mod = by_target[canonical_mod]
+    if not by_mod then return nil end
+    local entry = by_mod[k_idx]
+    if not entry then return nil end
+    if (entry.fire_t + entry.ttl) <= c.now() then
+        by_mod[k_idx] = nil
+        return nil
+    end
+    return entry
+end
+
+-- Local helper: clamp resolver eta to [FLOOR, CAP], then add lock_buffer.
+-- v0.5.40 verifier fix: removed the c.reaction_window intermediate fallback
+-- so the documented cfg.lock_buffer_s default (0.3) is honoured. The earlier
+-- chain silently shrank the buffer to cfg.reaction_window (0.1 in Lina),
+-- under-budgeting engine apply slack and risking premature lock release.
+local function clamp_ttl(c, eta)
+    local capped = math.min(math.max(eta or 0, 0), LOCK_TTL_HARD_CAP_S)
+    local buf    = c.lock_buffer_s or DEFAULT_LOCK_BUFFER_S
+    local ttl    = capped + buf
+    if ttl < LOCK_TTL_FLOOR_S then ttl = LOCK_TTL_FLOOR_S end
+    return ttl
+end
+
+-- Local helper: resolve the lock TTL for a (canonical_mod, threat_caster,
+-- target, armed_entry, ability_name) bundle via cfg.eta_resolver chain.
+-- Order: cfg.eta_resolver[canonical_mod] -> cfg.eta_resolver_default ->
+-- cfg.fallback_lock_ttl_s -> DEFAULT_FALLBACK_LOCK_TTL. Emits
+-- eta_resolver_fallback tlog at v=1 when the canonical_mod has no catalog
+-- entry (operators add proper entries during play).
+local function resolve_ttl(c, canonical_mod, threat_caster, target_unit, armed_entry, ability_name)
+    local resolver
+    if c.eta_resolver and canonical_mod then
+        resolver = c.eta_resolver[canonical_mod]
+    end
+    if not resolver then resolver = c.eta_resolver_default end
+    if resolver then
+        local ability_handle
+        if c.ability_handle and ability_name then
+            local ok, h = pcall(c.ability_handle, ability_name)
+            if ok then ability_handle = h end
+        end
+        local ok, eta = pcall(resolver, threat_caster, target_unit, armed_entry, ability_handle, c.now())
+        if ok and type(eta) == "number" then
+            return clamp_ttl(c, eta)
+        end
+    end
+    local fallback = c.fallback_lock_ttl_s or DEFAULT_FALLBACK_LOCK_TTL
+    c.tlog(1, "eta_resolver_fallback", {
+        mod = canonical_mod,
+        caster_idx = ent_idx(c, threat_caster),
+        ttl = string.format("%.2f", fallback),
+    })
+    return clamp_ttl(c, fallback)
+end
+
+---v0.5.40 TIER 0: attempt to acquire a per-threat lock for the (target,
+---canonical_mod, caster) tuple. Identity-by-handle for caster_unit matches
+---v0.5.14 BL-A5/B7 (two different casters arming the same modifier are two
+---distinct concurrent threats). Returns (true, nil) on acquire,
+---(false, existing_entry) when a live lock blocks. Returns (true, nil) with
+---NO lock written when the key is unresolvable (nil canonical_mod / nil
+---target / nil caster) to preserve the v0.5.39 unlocked path for
+---lotus_pending: / line_intercept: / fog-projectile callers.
+---@param target_unit any
+---@param canonical_mod string|nil
+---@param caster_unit any
+---@param ttl number  seconds until expiry
+---@return boolean ok, table|nil existing_lock_info
+function Dispatcher:TryAcquireLock(target_unit, canonical_mod, caster_unit, ttl)
+    return self:_TryAcquireLockOnDomain(self.in_flight_locks, target_unit, canonical_mod, caster_unit, ttl, false)
+end
+
+---Internal: domain-parameterised lock acquire. ally_domain flag flips the
+---tlog event suffix and the _force_bypass key prefix so self/ally locks
+---log distinguishably without colliding bypass flags.
+---@param domain table
+---@param target_unit any
+---@param canonical_mod string|nil
+---@param caster_unit any
+---@param ttl number
+---@param ally_domain boolean
+---@return boolean ok, table|nil existing
+function Dispatcher:_TryAcquireLockOnDomain(domain, target_unit, canonical_mod, caster_unit, ttl, ally_domain)
+    local c = self.cfg
+    local t_idx, mod_key, k_idx = lock_key(c, target_unit, canonical_mod, caster_unit)
+    if not t_idx then
+        c.tlog(2, "lock_key_unresolvable", { mod = canonical_mod, domain = ally_domain and "ally" or "self" })
+        return true, nil
+    end
+    -- One-shot bypass consume (panic key). Bypass key prefix isolates self
+    -- and ally domains so a panic on self does not unlock an ally-domain
+    -- pending fire on the same tuple.
+    local bypass_prefix = ally_domain and "ally:" or "self:"
+    local bypass_id = bypass_prefix .. t_idx .. ":" .. (mod_key or "") .. ":" .. k_idx
+    local bypassed = false
+    if self._force_bypass[bypass_id] then
+        self._force_bypass[bypass_id] = nil
+        bypassed = true
+        c.tlog(2, "force_next_consumed", {
+            domain = ally_domain and "ally" or "self",
+            target_idx = t_idx, mod = mod_key, caster_idx = k_idx,
+        })
+    end
+    if not bypassed then
+        local existing = get_live_lock(c, domain, t_idx, mod_key, k_idx)
+        if existing then
+            return false, existing
+        end
+    end
+    -- Acquire. Build nested tables lazily.
+    local by_target = domain[t_idx]
+    if not by_target then by_target = {}; domain[t_idx] = by_target end
+    local by_mod = by_target[mod_key]
+    if not by_mod then by_mod = {}; by_target[mod_key] = by_mod end
+    local entry = {
+        fire_t      = c.now(),
+        ttl         = ttl,
+        save_short  = nil,
+        intent      = nil,
+        armed_entry = nil,
+    }
+    by_mod[k_idx] = entry
+    c.tlog(2, "lock_acquired", {
+        domain = ally_domain and "ally" or "self",
+        target_idx = t_idx, mod = mod_key, caster_idx = k_idx,
+        ttl = string.format("%.2f", ttl),
+    })
+    return true, nil
+end
+
+---v0.5.40 TIER 0: release a lock for (target, canonical_mod, caster). nil
+---when no lock is held; idempotent. Emits lock_released tlog. Typical
+---callers: ForceNextDispatch (drops, then bypass+re-acquire), explicit
+---resolver-failed paths (rare; lazy expiry covers the normal case).
+---@param target_unit any
+---@param canonical_mod string|nil
+---@param caster_unit any
+function Dispatcher:ReleaseLock(target_unit, canonical_mod, caster_unit)
+    self:_ReleaseLockOnDomain(self.in_flight_locks, target_unit, canonical_mod, caster_unit, false)
+end
+
+---Internal: domain-parameterised release.
+function Dispatcher:_ReleaseLockOnDomain(domain, target_unit, canonical_mod, caster_unit, ally_domain)
+    local c = self.cfg
+    local t_idx, mod_key, k_idx = lock_key(c, target_unit, canonical_mod, caster_unit)
+    if not t_idx then return end
+    local by_target = domain[t_idx]
+    if not by_target then return end
+    local by_mod = by_target[mod_key]
+    if not by_mod then return end
+    if by_mod[k_idx] then
+        by_mod[k_idx] = nil
+        c.tlog(2, "lock_released", {
+            domain = ally_domain and "ally" or "self",
+            target_idx = t_idx, mod = mod_key, caster_idx = k_idx,
+        })
+    end
+end
+
+---v0.5.40 TIER 0: schedule a one-shot bypass for the NEXT Dispatch call on
+---the (target, canonical_mod, caster) tuple. Drops the bypass flag inside
+---Dispatch via TryAcquireLock, then re-acquires a fresh lock normally on a
+---successful fire. Replaces the panic-key throttle_state.last_save_t=0 hack
+---that v0.5.37 panic_override_until used; same semantics (one threat skip,
+---next save re-locks normally).
+---@param target_unit any
+---@param canonical_mod string|nil
+---@param caster_unit any
+function Dispatcher:ForceNextDispatch(target_unit, canonical_mod, caster_unit)
+    local c = self.cfg
+    local t_idx, mod_key, k_idx = lock_key(c, target_unit, canonical_mod, caster_unit)
+    if not t_idx then
+        c.tlog(2, "force_next_unresolvable", { mod = canonical_mod })
+        return
+    end
+    -- Self-domain by convention; panic key is self-save. Ally-domain panic
+    -- would need a sibling ForceNextDispatchAlly which Tier 0 does not ship.
+    local bypass_id = "self:" .. t_idx .. ":" .. (mod_key or "") .. ":" .. k_idx
+    self._force_bypass[bypass_id] = true
+    c.tlog(2, "force_next_armed", {
+        target_idx = t_idx, mod = mod_key, caster_idx = k_idx,
+    })
+end
+
+-- Local helper: the chain-walk body extracted from the v0.5.39 TrySaveSelf
+-- so Dispatch can call it as the default fire path. Behaviour MUST stay
+-- byte-equivalent to the v0.5.39 walk (same skip reasons, same order, same
+-- tlog event names) so log greps and the v0.5.7 E13 invariant survive. The
+-- only structural change is that the lock acquisition wraps the OUTSIDE of
+-- this call (in Dispatch), not the INSIDE.
+local function run_chain_walk(self, intent, threat_mod, threat_caster,
+                              category_hint, ability_name, on_save_fired,
+                              armed_entry, ctx)
+    local c = self.cfg
+    if not self:CanFire() then
+        c.tlog(3, "layer2_window_throttle", { intent = intent })
+        return false
+    end
+
+    local order, is_authoritative = self:ResolveSaveOrder(threat_mod, category_hint, ability_name, ctx)
+    local severity = (c.TD.SeverityOf and c.TD.SeverityOf(threat_mod)) or "medium"
+    local homing = threat_mod and c.threats_on_self
+                   and c.threats_on_self[threat_mod]
+                   and c.threats_on_self[threat_mod].homing or false
+
+    for _, save_name in ipairs(order) do
+        local fire_entry = c.save_fire[save_name]
+        if not fire_entry then
+            c.tlog(3, "save_chain_skip", { save = save_name, reason = "no_entry" })
+        elseif c.ability_saves[save_name] and not c.self_can_cast_abilities() then
+            c.tlog(3, "save_chain_skip", { save = save_name, reason = "ability_muted" })
+        elseif homing and c.self_displacement_saves[save_name] then
+            c.tlog(3, "save_chain_skip", { save = fire_entry.short, reason = "homing_no_displacement" })
+        elseif not is_authoritative and not save_counters_ok(c, save_name, threat_mod) then
+            c.tlog(3, "save_chain_skip", { save = fire_entry.short, reason = "kind_mismatch" })
+        elseif not is_authoritative and not tether_breaks_ok(c, save_name, threat_mod, threat_caster) then
+            c.tlog(3, "save_chain_skip", { save = fire_entry.short, reason = "tether_unreachable" })
+        elseif not c.save_is_ready(save_name) then
+            c.tlog(3, "save_chain_skip", { save = fire_entry.short, reason = "not_ready" })
+        else
+            local penalty = (c.TD.SaveReservePenalty and c.TD.SaveReservePenalty(save_name, threat_mod)) or 0
+            local concurrent = self:CountConcurrentExcluding(armed_entry)
+            if concurrent >= 1 then penalty = penalty + c.concurrent_penalty end
+            if penalty < c.reserve_skip_floor then
+                c.tlog(3, "save_chain_skip", {
+                    save = fire_entry.short, reason = "reserved",
+                    severity = severity, concurrent = concurrent,
+                })
+            else
+                local issue_intent = intent .. "_" .. fire_entry.short
+                if fire_entry.fire(issue_intent, threat_caster, threat_mod) then
+                    if on_save_fired then
+                        on_save_fired(intent, fire_entry.short, threat_mod, threat_caster)
+                    end
+                    return true, fire_entry.short
+                end
+                c.tlog(3, "save_chain_skip", { save = fire_entry.short, reason = "fire_returned_false" })
+            end
+        end
+    end
+
+    if threat_mod then
+        c.tlog(1, "no_effective_save_for_threat", { intent = intent, threat = threat_mod })
+    else
+        c.tlog(2, "layer2_no_save_available", { intent = intent })
+    end
+    return false
+end
+
+---v0.5.40 TIER 0: unified top-level Dispatch entry. Acquires a per-threat
+---lock keyed (target_idx, canonical_mod, caster_idx), then fires either the
+---supplied fire_thunk (covers Layer-1 FC offensive sites and lotus-direct
+---paths) or the default chain-walk (covers Layer-2 TrySaveSelf migration).
+---On a successful fire the lock is HELD (not released) so sibling fires
+---against the same threat are blocked until the lock TTL expires. On block,
+---emits dispatch_blocked tlog with the existing lock info. The lib does NOT
+---call MarkFired; the hero's on_save_fired callback chain owns that (matches
+---v0.5.39 contract noted at L165-167 of the v0.5.39 file).
+---@param intent string
+---@param threat_mod string|nil
+---@param threat_caster any
+---@param target_unit any
+---@param fire_thunk fun(intent:string, threat_mod:string|nil, threat_caster:any):boolean|nil
+---@param category_hint string|nil
+---@param ability_name string|nil
+---@param armed_entry table|nil
+---@param on_save_fired fun(intent:string, short:string, mod:string|nil, caster:any)|nil
+---@param ctx table|nil  v0.5.40 GAP-3 chain-resolver context
+---@return boolean fired
+function Dispatcher:Dispatch(intent, threat_mod, threat_caster, target_unit,
+                             fire_thunk, category_hint, ability_name,
+                             armed_entry, on_save_fired, ctx)
+    local c = self.cfg
+    local canonical_mod = canon(c, threat_mod)
+    local ttl = resolve_ttl(c, canonical_mod, threat_caster, target_unit, armed_entry, ability_name)
+    local ok, existing = self:_TryAcquireLockOnDomain(
+        self.in_flight_locks, target_unit, canonical_mod, threat_caster, ttl, false)
+    if not ok then
+        c.tlog(2, "dispatch_blocked", {
+            domain        = "self",
+            intent        = intent,
+            mod           = canonical_mod,
+            caster_idx    = ent_idx(c, threat_caster),
+            target_idx    = ent_idx(c, target_unit),
+            existing_save = existing and existing.save_short or "-",
+            existing_intent = existing and existing.intent or "-",
+            ttl_remaining = existing and string.format("%.2f", (existing.fire_t + existing.ttl) - c.now()) or "0.00",
+        })
+        return false
+    end
+    -- Fire path. fire_thunk supplied -> Layer-1 / lotus-direct; else default
+    -- chain walk. run_chain_walk returns (true, save_short) on success so we
+    -- can stamp the lock entry's save_short / intent for dispatch_blocked
+    -- diagnostics on subsequent sibling fires.
+    -- v0.5.40 verifier fix: thunk branch now passes CanFire gate before
+    -- pcall so Layer-1 FC offensive callers do not bypass the v0.5.39
+    -- LAYER2_REACTION_WINDOW (E13 cross-threat throttle, lib-doc L19).
+    local fired, save_short
+    if fire_thunk then
+        if not self:CanFire() then
+            c.tlog(3, "layer2_window_throttle", { intent = intent, source = "thunk" })
+            self:_ReleaseLockOnDomain(self.in_flight_locks, target_unit, canonical_mod, threat_caster, false)
+            return false
+        end
+        local thunk_ok, thunk_ret = pcall(fire_thunk, intent, threat_mod, threat_caster)
+        fired = thunk_ok and thunk_ret and true or false
+        save_short = "thunk"
+    else
+        fired, save_short = run_chain_walk(self, intent, threat_mod, threat_caster,
+                                           category_hint, ability_name, on_save_fired,
+                                           armed_entry, ctx)
+    end
+    if fired then
+        -- Stamp diagnostic fields on the lock entry. Lock is HELD; release
+        -- happens via lazy expiry inside the next TryAcquireLock check.
+        local t_idx, mod_key, k_idx = lock_key(c, target_unit, canonical_mod, threat_caster)
+        if t_idx then
+            local entry = self.in_flight_locks[t_idx]
+                        and self.in_flight_locks[t_idx][mod_key]
+                        and self.in_flight_locks[t_idx][mod_key][k_idx]
+            if entry then
+                entry.save_short  = save_short or entry.save_short
+                entry.intent      = intent
+                entry.armed_entry = armed_entry
+            end
+        end
+        return true
+    end
+    -- Failed fire: release the lock so a sibling attempt within the same
+    -- tick (different chain head, retry path) is not silenced. Matches
+    -- v0.5.39 semantics where a fire_returned_false fall-through leaves no
+    -- bookkeeping behind.
+    self:_ReleaseLockOnDomain(self.in_flight_locks, target_unit, canonical_mod, threat_caster, false)
+    return false
+end
+
+---v0.5.40 TIER 0: ally-domain Dispatch. Separate lock map so Lotus-on-self
+---does NOT block Glimmer-on-ally for the same canonical_mod. Hero-supplied
+---ally_chain optionally overrides cfg.default_chain for the walk; pass nil
+---to use the standard resolver (the hero's ally-save layer typically
+---supplies a dedicated chain via hero_save_overrides or a category_hint).
+---@param intent string
+---@param threat_mod string|nil
+---@param threat_caster any
+---@param ally_unit any
+---@param fire_thunk fun(intent:string, threat_mod:string|nil, threat_caster:any):boolean|nil
+---@param ally_chain table|nil  optional override chain for ally walk
+---@param category_hint string|nil
+---@param ability_name string|nil
+---@param armed_entry table|nil
+---@param on_save_fired fun(intent:string, short:string, mod:string|nil, caster:any)|nil
+---@param ctx table|nil
+---@return boolean fired
+function Dispatcher:DispatchAlly(intent, threat_mod, threat_caster, ally_unit,
+                                 fire_thunk, ally_chain, category_hint,
+                                 ability_name, armed_entry, on_save_fired, ctx)
+    local c = self.cfg
+    local canonical_mod = canon(c, threat_mod)
+    local ttl = resolve_ttl(c, canonical_mod, threat_caster, ally_unit, armed_entry, ability_name)
+    local ok, existing = self:_TryAcquireLockOnDomain(
+        self.in_flight_locks_ally, ally_unit, canonical_mod, threat_caster, ttl, true)
+    if not ok then
+        c.tlog(2, "dispatch_blocked", {
+            domain        = "ally",
+            intent        = intent,
+            mod           = canonical_mod,
+            caster_idx    = ent_idx(c, threat_caster),
+            target_idx    = ent_idx(c, ally_unit),
+            existing_save = existing and existing.save_short or "-",
+            existing_intent = existing and existing.intent or "-",
+            ttl_remaining = existing and string.format("%.2f", (existing.fire_t + existing.ttl) - c.now()) or "0.00",
+        })
+        return false
+    end
+    -- v0.5.40 verifier fixes for ally path:
+    --   (a) thunk branch CanFire gate (same rationale as self-domain).
+    --   (b) ally_chain hot-swap pcall-wrap so a save_fire throw cannot leak
+    --       ally_chain into cfg.default_chain (would corrupt every later
+    --       Dispatch / TrySaveSelf walk for the rest of the script run).
+    local fired, save_short = false, nil
+    if fire_thunk then
+        if not self:CanFire() then
+            c.tlog(3, "layer2_window_throttle", { intent = intent, source = "thunk_ally" })
+            self:_ReleaseLockOnDomain(self.in_flight_locks_ally, ally_unit, canonical_mod, threat_caster, true)
+            return false
+        end
+        local thunk_ok, thunk_ret = pcall(fire_thunk, intent, threat_mod, threat_caster)
+        fired = thunk_ok and thunk_ret and true or false
+        save_short = "thunk"
+    else
+        -- For ally walks the standard chain-walk is reused but with an
+        -- optional ally_chain override threaded as a synthetic
+        -- category_hint shim. Heroes that need a true override should pass
+        -- the ally_chain via cfg.hero_save_overrides / cfg.category_chains
+        -- before init; ally_chain here is the runtime-fast path.
+        if ally_chain then
+            local saved_default = c.default_chain
+            c.default_chain = ally_chain
+            local pcall_ok, f_or_err, s_or_nil = pcall(run_chain_walk, self, intent, threat_mod, threat_caster,
+                                                       category_hint, ability_name, on_save_fired,
+                                                       armed_entry, ctx)
+            c.default_chain = saved_default
+            if not pcall_ok then
+                c.tlog(1, "dispatch_ally_walk_error", { intent = intent, err = tostring(f_or_err) })
+                fired, save_short = false, nil
+            else
+                fired, save_short = f_or_err, s_or_nil
+            end
+        else
+            fired, save_short = run_chain_walk(self, intent, threat_mod, threat_caster,
+                                               category_hint, ability_name, on_save_fired,
+                                               armed_entry, ctx)
+        end
+    end
+    if fired then
+        local t_idx, mod_key, k_idx = lock_key(c, ally_unit, canonical_mod, threat_caster)
+        if t_idx then
+            local entry = self.in_flight_locks_ally[t_idx]
+                        and self.in_flight_locks_ally[t_idx][mod_key]
+                        and self.in_flight_locks_ally[t_idx][mod_key][k_idx]
+            if entry then
+                entry.save_short  = save_short or entry.save_short
+                entry.intent      = intent
+                entry.armed_entry = armed_entry
+            end
+        end
+        return true
+    end
+    self:_ReleaseLockOnDomain(self.in_flight_locks_ally, ally_unit, canonical_mod, threat_caster, true)
+    return false
+end
+
+---Walk the resolved chain and fire the first eligible save. First-success-wins
+---(lesson 3). Homing close-gap threats skip self-displacement saves (lesson 5).
+---On a successful fire, `on_save_fired(intent, fire_short, threat_mod,
+---threat_caster)` is called. The hero's callback OWNS throttle bookkeeping
+---(typically chains through to dispatcher:MarkFired via the hero's record_save
+---and mark_layer2_fired adapters); the lib does NOT mark fired on its own here,
+---to avoid double-writing the throttle state when the hero already does so.
+---Direct callers that bypass TrySaveSelf (lotus-first / ally-save) call
+---MarkFired through the same hero chain.
+---
+---v0.5.40 TIER 0: TrySaveSelf is now a thin compat wrapper around Dispatch
+---so existing Lina call sites (armed_threats_tick, persistent_threats_tick,
+---events) keep working unchanged while the Routing phase migrates them to
+---Dispatch directly. Behaviour: identical to v0.5.39 for callers that do
+---NOT supply ctx and do NOT trigger lock contention (the common case);
+---callers that hit a live lock get a dispatch_blocked tlog + false return.
+---@param intent string
+---@param threat_mod string|nil
+---@param threat_caster any
+---@param category_hint string|nil
+---@param ability_name string|nil
+---@param on_save_fired fun(intent:string, short:string, mod:string|nil, caster:any)|nil
+---@param armed_entry table|nil
+---@param ctx table|nil  v0.5.40 GAP-3 ResolveSaveOrder context (optional)
+---@return boolean fired
+function Dispatcher:TrySaveSelf(intent, threat_mod, threat_caster,
+                                category_hint, ability_name, on_save_fired,
+                                armed_entry, ctx)
+    local c = self.cfg
+    local target_unit = c.self_npc and c.self_npc() or nil
+    return self:Dispatch(intent, threat_mod, threat_caster, target_unit,
+                         nil, category_hint, ability_name,
+                         armed_entry, on_save_fired, ctx)
+end
+
+return Defense
