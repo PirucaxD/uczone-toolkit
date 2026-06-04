@@ -55,9 +55,20 @@ end
 -- v0.5.74: lib/target needed by ThreatData.ComputeArrivalTime (lifted from
 -- Lina.lua state.compute_arrival_time, which had Target as an upvalue from
 -- the hero script). Same lesson v0.5.61 taught with lib/escape: lib modules
--- do NOT inherit hero-script upvalues; explicit require here keeps the
--- function self-contained.
-local Target = require("lib.target")
+-- do NOT inherit hero-script upvalues; explicit require keeps the function
+-- self-contained.
+--
+-- v0.5.75.1 hotfix: REQUIRE IS LAZY because lib/target.lua:271 has its own
+-- eager `require("lib.threat_data")` (for ESCAPE_ITEM_NAMES). An eager
+-- require here closes the cycle -> infinite recursion -> C stack overflow
+-- on cold game load. v0.5.74 only "worked" because Lina.lua's hot-reload
+-- cache-clear at the top only clears lib/defense + lib/escape, NOT
+-- lib/target or lib/threat_data, so a hot Lina reload kept both cached
+-- from a prior successful (pre-v0.5.74) load. Game restart killed the
+-- hot cache and the cycle bit. Resolve Target on first ComputeArrivalTime
+-- call instead; by then both modules are fully loaded and require returns
+-- the cached Target table immediately.
+local Target  -- resolved lazily inside ComputeArrivalTime; see v0.5.75.1 note above
 
 ----------------------------------------------------------------------------
 -- SAVE_KIND - every save item / ability classified by what it does
@@ -2107,7 +2118,10 @@ function ThreatData.ComputeArrivalTime(threat_mod, caster, target, modifier_hand
     if not (Entity.IsEntity and Entity.IsEntity(caster) and Entity.IsEntity(target)) then
         return nil
     end
-    if not (Target and Target.IsAlive and Target.IsAlive(caster) and Target.IsAlive(target)) then
+    -- v0.5.75.1: lazy-resolve Target to break the lib/threat_data <-> lib/target
+    -- circular require (see note at top-of-module forward-decl).
+    Target = Target or require("lib.target")
+    if not (Target.IsAlive and Target.IsAlive(caster) and Target.IsAlive(target)) then
         return nil
     end
     local entry = ThreatData.THREAT_ARRIVAL_TIMING[threat_mod]
