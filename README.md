@@ -33,6 +33,9 @@ aren't cancelled by the order flood).
 **Combat reasoning:**
 `target` (composable unit predicates), `timing` (will they dodge my combo),
 `save_select` (which of my escape items actually counters this threat),
+`escape` (danger-aware "where should I go" picker for displacement
+items; ranks 7 angles off straight-away by enemy density so the
+brain stops shoving you into the worst possible spot),
 `defense` (a full save-dispatcher with a per-(target, mod, caster)
 lock domain so two of your fire paths can't double-save against one
 threat).
