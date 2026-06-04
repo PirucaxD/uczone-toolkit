@@ -1,40 +1,93 @@
 ---@meta
----lib/defense.lua , generic save-dispatcher with a per-threat lock domain.
+---lib/defense.lua - generic Layer-2 save dispatcher (Tier-2 extraction).
 ---
----The hero supplies the data (a SAVE_FIRE map, the chain tables, override
----sets, filter sets) and a cfg of accessors; this lib supplies the
----algorithm. Each brain calls Defense.New(cfg) once at init and keeps
----thin adapters around the returned dispatcher.
+---Pulls the chain-resolution + chain-walk + throttle bookkeeping out of the
+---per-hero defense layer. The DATA (chain tables, SAVE_FIRE map, override
+---tables, filter sets) stays hero-side; the ALGORITHM lives here. Each hero
+---calls Defense.New{cfg} once at init and keeps thin adapters around the
+---returned dispatcher.
 ---
----The reason for sharing this is the per-(target_idx, canonical_mod,
----caster_idx) lock domain. When more than one of a brain's fire sites
----(anim subscriber, armed-tick handler, modifier-create callback,
----line-projectile intercept) wants to fire a save against the same
----threat in the same window, the lock keeps exactly one fire alive.
----Without that, the second site sees an unhandled threat, walks its
----chain, and the brain burns two saves on one threat. The hero side
----collapses sibling modifier names to a canonical key via
----cfg.canonicalize_mod so the lock holds across both fire paths even
----when they see different sibling spellings of the same threat.
+---No cross-hero state. Each dispatcher captures one cfg and operates only on
+---the throttle_state / armed_threats refs the hero passes in.
 ---
----No cross-hero state. Each dispatcher captures one cfg and operates
----only on the throttle_state / armed_threats refs the hero passes in.
----Multiple brains can use the lib concurrently with isolated state.
+---Audit-trail of equivalence vs the pre-extraction inline path:
+---  - ResolveSaveOrder mirrors Lina pre-v0.5.0 resolve_save_order (anim ->
+---    hero -> patched_recommended -> category -> default; first hit wins).
+---  - TrySaveSelf mirrors the chain walk: same skip reasons, same order,
+---    same reserve-penalty + concurrent-threat math, same tlog event names
+---    so log greps keep working unchanged.
+---  - CanFire / MarkFired match the inline LAYER2_REACTION_WINDOW gate.
 ---
----Behaviour-neutral fallbacks: a hero that does not supply
----cfg.canonicalize_mod / cfg.eta_resolver / cfg.entity_index falls
----through to identity canonicalisation + a 2.0s fallback TTL +
----unlocked path. Migration is opt-in per call site; existing
----TrySaveSelf callers keep working unchanged.
+---v0.5.40 TIER 0 (dispatcher unification):
+---  - Dispatcher.in_flight_locks / in_flight_locks_ally: per-threat lock map
+---    keyed [target_idx][canonical_mod][caster_idx]. Enforces the v0.5.7 E13
+---    single-save-per-engagement invariant structurally; replaces the
+---    Dedup.threat_already_responded 2.0s window that misses slow-travel
+---    threats (Bara WW+Pike, Sniper Assassinate D-key double-fire).
+---  - TryAcquireLock / ReleaseLock / ForceNextDispatch: identity-by-handle
+---    lock primitives. Lock key tuple (target_idx, canonical_mod, caster_idx)
+---    distinguishes casters per v0.5.14 BL-A5/BL-B7 (two casters arming the
+---    same modifier are two concurrent threats).
+---  - Dispatch / DispatchAlly: new top-level entries that wrap chain-walk in
+---    a lock-acquire / on-success-hold cycle. Self-domain and ally-domain
+---    locks live in separate maps (Lotus-on-self does NOT block Glimmer-on-
+---    ally for the same threat).
+---  - TrySaveSelf is now a thin compat wrapper around Dispatch for existing
+---    Lina call sites; the Routing phase migrates direct callers.
+---  - ResolveSaveOrder gains an optional ctx table for GAP-3 (FC chain
+---    demotion under fs_shard_window). Hero populates ctx; lib reads it.
+---  - cfg.canonicalize_mod (mod -> string) and cfg.eta_resolver
+---    (canonical_mod -> resolver_fn) are new hero-supplied accessors. Both
+---    optional; absence falls through to behavioural-neutral defaults
+---    (identity canonicalization, 2.0s fallback lock TTL).
+---
+---See Lina/LIB_DEFENSE_EXTRACTION.md for design + Sniper migration plan.
 
 local Defense = {}
 
--- reserve-skip / concurrent-penalty thresholds are passed in via cfg
--- (cfg.reserve_skip_floor / cfg.concurrent_penalty) rather than baked
--- in here, so brains can tune them independently. The hero-side
+---v0.5.53 Phase 3 slice 3: public lib helper for the per-save fire-window
+---math. Generalized from Lina's v0.5.51 state.compute_save_fire_window so
+---the dispatcher's per-save catalog gate (in run_chain_walk) and any
+---hero-side preview can share one source of truth.
+---
+---@param threat_entry table|nil  catalog entry (THREAT_ARRIVAL_TIMING[mod])
+---@param speed number|nil        effective threat speed (avg-during-prep)
+---@param save_entry table|nil    SAVE_FIRE[name] entry (must have prep_time)
+---@return number lower, number upper
+function Defense.ComputeSaveFireWindow(threat_entry, speed, save_entry)
+    local prep = (save_entry and save_entry.prep_time) or 0
+    local UPPER_TOLERANCE = 0.10
+    if threat_entry then
+        local k = threat_entry.kind or ""
+        -- channel_at_caster (WD) + cast_point_targeted (Lion / Lina /
+        -- Sniper Assassinate): preserve v0.5.51 behavior of always-open
+        -- window; fire-timing handled by other paths in v0.5.53. Slice 4
+        -- (v0.5.54) will revisit when cast-point-armed branches consume
+        -- catalog cast_point.
+        if k == "channel_at_caster" or k == "cast_point_targeted" then
+            return 0, math.huge
+        end
+        -- AoE-catch saves on homing kinds: upper is geometric
+        -- (catch_radius / speed). W has catch_radius=225; other saves
+        -- leave it nil and fall through to tight tolerance.
+        if (k == "homing_charge" or k == "homing_carry")
+           and save_entry and save_entry.catch_radius
+           and speed and speed > 0 then
+            return prep, prep + save_entry.catch_radius / speed
+        end
+    end
+    -- Default: tight tolerance (D3 from v0.5.51: singular fire moment
+    -- per spec "fire moment as impact_t - prep_t", small upper margin
+    -- for frame-rate slack only).
+    return prep, prep + UPPER_TOLERANCE
+end
+
+-- v0.5.39 P3-LOW-magic: reserve-skip / concurrent-penalty thresholds are
+-- passed in via cfg (cfg.reserve_skip_floor / cfg.concurrent_penalty) rather
+-- than baked in here, so heroes can tune them independently. The hero-side
 -- source of truth lives in the hero file's module-level constants (e.g. Lina:
 -- state.RESERVE_SKIP_FLOOR / state.CONCURRENT_PENALTY). The hero file's
--- chain-peek helper (armed_chain_peek in the brain source) MUST mirror these same
+-- chain-peek helper (armed_chain_peek in Lina.lua) MUST mirror these same
 -- values when previewing the dispatcher's gate; v0.5.39 M1 routed the count
 -- itself through Dispatcher:CountConcurrentExcluding so peek+dispatch share
 -- one method, but the thresholds still need to be kept in lock-step.
@@ -52,7 +105,7 @@ local LOCK_TTL_HARD_CAP_S        = 6.0
 local LOCK_TTL_FLOOR_S           = 0.4
 
 ---Create a dispatcher bound to one hero's defense config.
----@param cfg table see the upstream design notes for the cfg field list
+---@param cfg table see Lina/LIB_DEFENSE_EXTRACTION.md for the cfg field list
 ---  v0.5.40 TIER 0 additions (all optional, backward-compatible):
 ---    cfg.canonicalize_mod   fun(mod:string|nil):string|nil
 ---        Hero-supplied alias collapser. Maps modifier_pudge_dismember_pull and
@@ -75,15 +128,29 @@ local LOCK_TTL_FLOOR_S           = 0.4
 ---        Optional. Returns the engine ability handle for an ability_name so
 ---        resolvers can read GetCastPoint / GetChannelTime live. nil-tolerant.
 ---    cfg.post_pick_filter   fun(picked:table, ctx:table|nil, threat_mod:string|nil, authoritative:boolean):table?, boolean?
----        Optional chain-rewrite hook called by ResolveSaveOrder after chain
----        resolution, before returning. Receives the resolved (picked, ctx,
----        threat_mod, authoritative); may return a new (picked, authoritative)
----        tuple to substitute. Return nil for picked to keep the resolved
----        chain. Lib applies new_auth only when non-nil so a hook returning
----        just a new chain preserves the original authoritative flag. Use
----        this for hero-specific reordering on live ctx (for example,
----        demoting a particular save under a context flag the hero sets).
----        nil hook = passthrough.
+---        v0.5.41 GAP-3-GENERIC. Optional chain-rewrite hook called by
+---        ResolveSaveOrder after chain resolution, before returning. Receives
+---        the resolved (picked, ctx, threat_mod, authoritative); may return a
+---        new (picked, authoritative) tuple to substitute. Return nil for
+---        picked to keep the resolved chain. Lib applies new_auth only when
+---        non-nil so a hook returning just a new chain preserves the
+---        original authoritative flag. nil hook = passthrough.
+---  v0.5.53 Phase 3 slice 3 additions (all optional, opt-in):
+---    cfg.threat_catalog     table|nil
+---        Map threat_mod -> catalog entry (kind / speed_source / catch_radius
+---        / etc.). When registered AND cfg.compute_arrival_time is registered,
+---        run_chain_walk applies a per-save catalog gate before firing each
+---        save with cfg.save_fire[name].prep_time > 0. Hero passes the same
+---        THREAT_ARRIVAL_TIMING table its own compute_arrival_time consumes.
+---        nil = no lib-side catalog gate (Sniper today; legacy behavior).
+---    cfg.compute_arrival_time fun(threat_mod:string, caster:any, target:any):number?, any, table?, number?
+---        Returns (impact_t, impact_pos, cat_entry, eff_speed). Used by the
+---        per-save catalog gate to compute fire windows. Same signature as
+---        Lina's state.compute_arrival_time. nil = no lib-side catalog gate.
+---    cfg.self_npc           fun():any|nil
+---        Returns the hero's own NPC handle (used as the catalog target).
+---        Already used by TrySaveSelf; now also consumed by the per-save
+---        catalog gate in run_chain_walk.
 ---@return table dispatcher
 function Defense.New(cfg)
     local self = setmetatable({ cfg = cfg }, Dispatcher)
@@ -104,10 +171,13 @@ end
 ---Resolve the effective save chain for a (threat_mod, category_hint,
 ---ability_name) tuple. Returns (chain, is_authoritative); authoritative
 ---chains bypass the kind/tether filters during the walk.
----Optional ctx table lets the hero pass live context that influences chain
----ordering. ctx is forwarded to cfg.post_pick_filter (when registered) so
----the hero decides which keys it cares about. The lib treats ctx as opaque.
----Behavior-neutral when the hook is nil or returns nil.
+---v0.5.40 GAP-3 / v0.5.41 GAP-3-GENERIC: optional ctx table lets the hero
+---pass live context that influences chain ordering. ctx is forwarded to
+---cfg.post_pick_filter (when registered) so the hero decides what keys it
+---cares about. The lib treats ctx as opaque. Behavior-neutral when the hook
+---is nil or returns nil. Lina's registration consumes ctx.fs_shard_window
+---to demote 'lina_flame_cloak' to chain tail during the 5s post-R Aghs
+---Shard window; see Lina/Lina.lua Defense.New cfg.post_pick_filter.
 ---@param threat_mod string|nil
 ---@param category_hint string|nil
 ---@param ability_name string|nil
@@ -115,13 +185,15 @@ end
 ---@return table chain, boolean is_authoritative
 function Dispatcher:ResolveSaveOrder(threat_mod, category_hint, ability_name, ctx)
     local c = self.cfg
-    -- Emit a single diagnostic tlog at each return point so operators can
-    -- read the resolved chain HEAD directly from the log without raising
-    -- verbosity. No behavioural change to the resolver itself; this is
-    -- diagnostic_only. The hero-side threat_on_self tlog should NOT also
-    -- report `save = entry.save` from the static lib hint, which operators
-    -- otherwise read as the resolved head and conclude the override was
-    -- unconsulted.
+    -- v0.5.13 E4 (HI-3 / PE04-OVERRIDE-WORKS): emit a single diagnostic tlog at
+    -- each return point so operators can read the resolved chain HEAD directly
+    -- from the log. PE04-OVERRIDE-WORKS confirmed LINA_SAVE_OVERRIDES is being
+    -- consulted (BKB > Manta > Eul > Aeon on Duel) but the level-1
+    -- threat_on_self line was reporting the static lib `save=` hint, which
+    -- operators kept reading as the resolved head and concluding the override
+    -- was unconsulted. No behavioural change to the resolver itself; this is
+    -- diagnostic_only. The companion Lina.lua threat_on_self tlog will drop /
+    -- demote that misleading `save = entry.save` field in a sibling patch.
     local picked, authoritative
     if ability_name then
         local ao = c.anim_save_overrides[ability_name]
@@ -168,15 +240,14 @@ function Dispatcher:ResolveSaveOrder(threat_mod, category_hint, ability_name, ct
         picked, authoritative = c.default_chain, false
     end
 
-    -- Hero-supplied chain-rewrite hook. Replaces what previously was a
-    -- hardcoded demotion case. The hero registers cfg.post_pick_filter
-    -- (picked, ctx, threat_mod, authoritative) -> (picked, authoritative)
-    -- and decides on live ctx whether to rebuild the chain. nil hook
-    -- returns the chain as resolved (behavior-neutral). The hook owns the
-    -- responsibility of building a NEW chain table rather than mutating
-    -- the cfg-supplied override / category / default tables, since those
-    -- are typically module-local on the hero side and mutations would
-    -- leak across calls.
+    -- v0.5.41 GAP-3-GENERIC: hero-supplied chain-rewrite hook. Replaces the
+    -- v0.5.40 hardcoded lina_flame_cloak demotion that used to live here.
+    -- Hero registers cfg.post_pick_filter(picked, ctx, threat_mod,
+    -- authoritative) -> (picked, authoritative); nil hook returns chain
+    -- as-is (behavior-neutral). Lina's registration replicates the v0.5.40
+    -- FC demotion under fs_shard_window; other heroes can reorder chains
+    -- on live ctx without editing the lib. Builds a NEW chain table inside
+    -- the hook so cfg override / category / default tables stay untouched.
     if c.post_pick_filter then
         local new_picked, new_auth = c.post_pick_filter(picked, ctx, threat_mod, authoritative)
         if new_picked then
@@ -202,7 +273,7 @@ end
 
 ---Mark a save as just-fired (writes throttle_state.last_save_t). Idempotent.
 ---v0.5.39 P1-LAST-SAVE-TGT: the throttle_state.last_save_target write has been
----removed (Sniper-port orphan; no Lina-side reader, see the brain source state-decl
+---removed (Sniper-port orphan; no Lina-side reader, see Lina.lua state-decl
 ---comment near state.last_save_t for history). Method signature preserved.
 ---@param threat_caster any  may be nil (kept for signature compatibility)
 function Dispatcher:MarkFired(threat_caster)
@@ -228,7 +299,7 @@ end
 ---entry-handle identity. Single source of truth for the reserve/concurrent
 ---penalty math; Lina armed_chain_peek delegates here so the per-hero peek
 ---and the lib chain-walk cannot drift. Pass the live armed_entry on the
----armed-fire path (the brain source armed_threats_tick L1528) so peek+dispatch agree
+---armed-fire path (Lina.lua armed_threats_tick L1528) so peek+dispatch agree
 ---on n=0 for the typical single-armed-threat case. Non-armed call sites
 ---(events / persistent / threat_on_self / lotus / line_intercept) pass nil
 ---and count all armed rows (legacy behaviour preserved).
@@ -344,6 +415,11 @@ end
 -- cfg.fallback_lock_ttl_s -> DEFAULT_FALLBACK_LOCK_TTL. Emits
 -- eta_resolver_fallback tlog at v=1 when the canonical_mod has no catalog
 -- entry (operators add proper entries during play).
+-- v0.5.72: resolver is now called with canonical_mod as the 6th arg so a
+-- generic default resolver can look up per-mod data from a lib catalog
+-- (Lina's _lina_eta_default consumes this to read THREAT_ARRIVAL_TIMING).
+-- Backwards-compatible: per-mod resolvers that take only 5 args ignore
+-- the extra parameter.
 local function resolve_ttl(c, canonical_mod, threat_caster, target_unit, armed_entry, ability_name)
     local resolver
     if c.eta_resolver and canonical_mod then
@@ -356,7 +432,7 @@ local function resolve_ttl(c, canonical_mod, threat_caster, target_unit, armed_e
             local ok, h = pcall(c.ability_handle, ability_name)
             if ok then ability_handle = h end
         end
-        local ok, eta = pcall(resolver, threat_caster, target_unit, armed_entry, ability_handle, c.now())
+        local ok, eta = pcall(resolver, threat_caster, target_unit, armed_entry, ability_handle, c.now(), canonical_mod)
         if ok and type(eta) == "number" then
             return clamp_ttl(c, eta)
         end
@@ -522,6 +598,49 @@ local function run_chain_walk(self, intent, threat_mod, threat_caster,
 
     for _, save_name in ipairs(order) do
         local fire_entry = c.save_fire[save_name]
+        -- v0.5.55: removed the v0.5.53 per-save catalog gate. Chain walker
+        -- returns to its pre-v0.5.53 dumb-walk shape per the refactor that
+        -- matches Sniper's proven single-chain pattern. Hero .fire bodies
+        -- handle their own timing (Lina's lina_w_anti_gap.fire now does
+        -- the impact_t window check internally). Defense.ComputeSaveFireWindow
+        -- stays as a public helper for hero .fire bodies that want the math.
+        --
+        -- v0.5.70: opt-in catalog impact_t defer + severity-aware skip for
+        -- high-CD saves (Lotus / BKB / Aeon). Hero registers
+        -- cfg.high_cd_saves + cfg.compute_arrival_time + cfg.self_hp_fraction
+        -- to enable. Without these registrations the chain walker is
+        -- byte-equivalent to pre-v0.5.70 behaviour.
+        --   - catalog_defer: if the threat has a THREAT_ARRIVAL_TIMING entry
+        --     and impact_t > cfg.cast_point_defer_threshold (default 0.5s),
+        --     skip the high-CD save with reason=cast_point_too_early. The
+        --     armed-threats tick re-evaluates each frame; the save fires
+        --     when impact_t crosses the threshold.
+        --   - severity_skip: if severity == "low" AND HP fraction >
+        --     cfg.severity_skip_hp_threshold (default 0.75), skip with
+        --     reason=low_severity_high_hp. Avoids burning a 60s BKB on a
+        --     CM Frostbite when Lina is at full HP.
+        local is_high_cd = fire_entry and c.high_cd_saves
+                           and c.high_cd_saves[save_name] or false
+        local catalog_defer_t
+        if is_high_cd and c.compute_arrival_time and threat_mod
+           and threat_caster and c.self_npc then
+            local me = c.self_npc()
+            if me then
+                local impact_t = c.compute_arrival_time(threat_mod, threat_caster, me)
+                if impact_t and impact_t > (c.cast_point_defer_threshold or 0.5) then
+                    catalog_defer_t = impact_t
+                end
+            end
+        end
+        local sev_skip_hp
+        if is_high_cd and not catalog_defer_t
+           and severity == "low" and c.self_hp_fraction then
+            local hp_frac = c.self_hp_fraction()
+            local threshold = c.severity_skip_hp_threshold or 0.75
+            if hp_frac and hp_frac > threshold then
+                sev_skip_hp = hp_frac
+            end
+        end
         if not fire_entry then
             c.tlog(3, "save_chain_skip", { save = save_name, reason = "no_entry" })
         elseif c.ability_saves[save_name] and not c.self_can_cast_abilities() then
@@ -534,6 +653,18 @@ local function run_chain_walk(self, intent, threat_mod, threat_caster,
             c.tlog(3, "save_chain_skip", { save = fire_entry.short, reason = "tether_unreachable" })
         elseif not c.save_is_ready(save_name) then
             c.tlog(3, "save_chain_skip", { save = fire_entry.short, reason = "not_ready" })
+        elseif catalog_defer_t then
+            c.tlog(3, "save_chain_skip", {
+                save = fire_entry.short, reason = "cast_point_too_early",
+                impact_t = string.format("%.2f", catalog_defer_t),
+                threshold = string.format("%.2f", c.cast_point_defer_threshold or 0.5),
+            })
+        elseif sev_skip_hp then
+            c.tlog(3, "save_chain_skip", {
+                save = fire_entry.short, reason = "low_severity_high_hp",
+                hp = string.format("%.2f", sev_skip_hp),
+                threshold = string.format("%.2f", c.severity_skip_hp_threshold or 0.75),
+            })
         else
             local penalty = (c.TD.SaveReservePenalty and c.TD.SaveReservePenalty(save_name, threat_mod)) or 0
             local concurrent = self:CountConcurrentExcluding(armed_entry)

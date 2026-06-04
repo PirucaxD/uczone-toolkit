@@ -1,8 +1,8 @@
 ---@meta
----lib/threat_data.lua , universal threat / save classification data.
+---lib/threat_data.lua - universal threat / save classification data.
 ---
 ---Data-only Tier 2 extraction. The tables and pure helpers in this module
----don't change per hero , Pike's push distance is 425u for everyone, Bane
+---don't change per hero - Pike's push distance is 425u for everyone, Bane
 ---Nightmare is countered by invuln/magic_immune/dispel/reflect regardless
 ---of who's defending against it.
 ---
@@ -21,7 +21,7 @@
 ---**Does NOT own (stays per-hero):**
 ---  - Save chain execution order
 ---  - Hero-specific save abilities (Sniper's grenade-self, etc.)
----  - try_save_self, armed_threats_tick , these are logic that we'll
+---  - try_save_self, armed_threats_tick - these are logic that we'll
 ---    extract to `lib/defense.lua` once a second hero proves the API shape
 ---    (project's "two-hero rule").
 ---
@@ -53,49 +53,49 @@ local function sg(name, field, fallback)
 end
 
 ----------------------------------------------------------------------------
--- SAVE_KIND , every save item / ability classified by what it does
+-- SAVE_KIND - every save item / ability classified by what it does
 ----------------------------------------------------------------------------
 
 ---Save-effect categories. A save is "effective" against a threat iff any of
 ---its kinds appears in the threat's counter list.
 ---
 ---Kind meanings:
----  invuln                   , caster goes invuln (Eul cyclone, Aeon trigger,
+---  invuln                   - caster goes invuln (Eul cyclone, Aeon trigger,
 ---                             Wind Waker cyclone)
----  dispel_basic             , applies basic dispel (Eul exit, Manta split,
+---  dispel_basic             - applies basic dispel (Eul exit, Manta split,
 ---                             Satanic active, Diffusal/Disperser purge)
----  magic_immune             , magic immunity (BKB)
----  magic_barrier            , absorbs magic damage via barrier (Eternal
+---  magic_immune             - magic immunity (BKB)
+---  magic_barrier            - absorbs magic damage via barrier (Eternal
 ---                             Shroud, Pipe of Insight)
----  magic_resist             , passive flat magic resist buff (Glimmer)
----  reflect_target           , Lotus Orb reflects single-target enemy casts
----  invis                    , invisibility breaks attack target-lock
+---  magic_resist             - passive flat magic resist buff (Glimmer)
+---  reflect_target           - Lotus Orb reflects single-target enemy casts
+---  invis                    - invisibility breaks attack target-lock
 ---                             (Glimmer, Silver Edge wind-walk, Solar Crest)
----  damage_block             , flat physical damage reduction (Crimson
+---  damage_block             - flat physical damage reduction (Crimson
 ---                             Guard active barrier)
----  damage_return            , reflects physical damage back (Blade Mail)
----  physical_immune          , immune to physical attacks (Ghost active)
----  displacement_perp        , perpendicular 400-500u (Pike, Force,
----                             Grenade-self) , works vs LINE projectiles +
+---  damage_return            - reflects physical damage back (Blade Mail)
+---  physical_immune          - immune to physical attacks (Ghost active)
+---  displacement_perp        - perpendicular 400-500u (Pike, Force,
+---                             Grenade-self) - works vs LINE projectiles +
 ---                             DELAYED-AOE
----  displacement_far         , 500u+ displacement (Pike, Force) , works vs
+---  displacement_far         - 500u+ displacement (Pike, Force) - works vs
 ---                             TETHER channels that break at range
----  displacement_blink       , instant 1200u teleport (Blink Dagger and
----                             variants) , breaks any tether
----  displacement_at_source   , knocks the THREAT CASTER off their position
----                             (grenade-at-caster) , breaks Bara Charge,
+---  displacement_blink       - instant 1200u teleport (Blink Dagger and
+---                             variants) - breaks any tether
+---  displacement_at_source   - knocks the THREAT CASTER off their position
+---                             (grenade-at-caster) - breaks Bara Charge,
 ---                             Tusk Snowball via forced movement
----  channel_break            , interrupts enemy channel via ROOT_DISABLES
+---  channel_break            - interrupts enemy channel via ROOT_DISABLES
 ---                             (grenade-at-caster, hex, stun on caster)
----  phase                    , phase movement, walks through units
----                             (Phase Boots active) , minor save
+---  phase                    - phase movement, walks through units
+---                             (Phase Boots active) - minor save
 ---@type table<string, string[]>
 ThreatData.SAVE_KIND = {
     -- Self-protection items
     item_cyclone            = { "invuln", "dispel_basic" },     -- 2.5s cyclone
     item_wind_waker         = { "invuln", "dispel_basic" },     -- 3.5s cyclone, dispel on exit, can act during cyclone
     -- v6.7: Aeon Disk applies STRONG dispel on trigger (Liquipedia 7.41).
-    -- Strong dispel supersets basic dispel , can counter Nightmare, Doom,
+    -- Strong dispel supersets basic dispel - can counter Nightmare, Doom,
     -- Ensnare even after they land.
     item_aeon_disk          = { "invuln", "dispel_basic" },     -- auto-trigger 1.5s invuln + strong dispel at <=80% HP
     item_lotus_orb          = { "reflect_target" },
@@ -105,7 +105,7 @@ ThreatData.SAVE_KIND = {
     -- per Liquipedia). Useful against Naga Ensnare and other dispel-only
     -- counterable threats.
     item_black_king_bar     = { "magic_immune", "dispel_basic" },
-    -- v6.7: item_eternal_shroud was REMOVED in 7.41 , entry deleted.
+    -- v6.7: item_eternal_shroud was REMOVED in 7.41 - entry deleted.
     item_pipe_of_insight    = { "magic_barrier" },              -- AoE magic barrier on team
     item_crimson_guard      = { "damage_block" },               -- AoE flat damage block + team barrier
     item_blade_mail         = { "damage_return" },
@@ -130,7 +130,7 @@ ThreatData.SAVE_KIND = {
 }
 
 ----------------------------------------------------------------------------
--- THREAT_COUNTER , which kinds actually counter each threat
+-- THREAT_COUNTER - which kinds actually counter each threat
 ----------------------------------------------------------------------------
 
 ---Threat modifier → list of save-kind names that effectively counter it.
@@ -147,7 +147,7 @@ ThreatData.THREAT_COUNTER = {
     modifier_doom_bringer_doom           = { "invuln", "magic_immune", "reflect_target", "magic_barrier" },
     -- Channel-tethers: far displacement breaks tether range. `channel_break`
     -- (grenade-on-caster knockback breaks the channel via ROOT_DISABLES) is
-    -- the cheapest counter when the caster is in 600u , preferred over self-
+    -- the cheapest counter when the caster is in 600u - preferred over self-
     -- save items when readiness allows. `displacement_blink` (1200u Blink)
     -- always breaks any tether reliably. `magic_barrier` absorbs damage
     -- ticks for channels that deal magic damage (Grip, Dismember).
@@ -169,7 +169,7 @@ ThreatData.THREAT_COUNTER = {
     },
     -- Homing charges: invuln/magic_immune are the BEST counters (prevent stun
     -- on impact entirely). `displacement_at_source` (knock the CHARGER off
-    -- their path) actually CANCELS Bara Charge / Tusk Snowball , forced
+    -- their path) actually CANCELS Bara Charge / Tusk Snowball - forced
     -- movement on the charger dispels the charge modifier. Self-displacement
     -- is just a delay (homing re-targets).
     modifier_spirit_breaker_charge_of_darkness = {
@@ -182,10 +182,10 @@ ThreatData.THREAT_COUNTER = {
         "displacement_at_source", "channel_break",
         "displacement_perp", "displacement_far",
     },
-    -- v6.15.162: Kez Grappling Claw , Kez swings to a unit-target, 80%
+    -- v6.15.162: Kez Grappling Claw - Kez swings to a unit-target, 80%
     -- MS-slows them on hook collision, then lands a lifesteal hit. Gap-close
     -- profile; unlike Tusk's snowball Kez is NOT displacement-immune, so
-    -- pushing the caster (or self) is viable. (verify modifier name ,
+    -- pushing the caster (or self) is viable. (verify modifier name -
     -- modseen harvest; modifier_kez_grappling_claw_slow is the best guess.)
     modifier_kez_grappling_claw_slow          = {
         "invuln", "magic_immune", "dispel_basic",
@@ -206,7 +206,7 @@ ThreatData.THREAT_COUNTER = {
         "displacement_blink", "magic_barrier",
     },
     -- Line projectiles: perpendicular displacement = miss. Blink = miss.
-    -- v6.14.1 M3: dropped `invuln` , cyclone does NOT break a flying hook;
+    -- v6.14.1 M3: dropped `invuln` - cyclone does NOT break a flying hook;
     -- the hook latches as it arrives and pulls you out of cyclone's landing
     -- position. Eul/Wind Waker only help if cast BEFORE the hook leaves
     -- Pudge's hand (the pre-cast path, which we don't currently detect).
@@ -242,10 +242,10 @@ ThreatData.THREAT_COUNTER = {
         "invuln", "displacement_far", "displacement_perp", "displacement_blink",
         "dispel_basic",
     },
-    -- Lockdown , Blade Mail returns damage during forced attacks
+    -- Lockdown - Blade Mail returns damage during forced attacks
     modifier_legion_commander_duel       = { "invuln", "dispel_basic", "damage_return" },
     -- Misc CC
-    modifier_axe_berserkers_call         = { "magic_immune", "damage_return" },  -- LISTED FOR COMPLETENESS BUT NEITHER ACTUALLY COUNTERS: Berserker's Call pierces spell immunity (BKB does nothing), and Blade Mail returns Sniper's own attack damage at full vs the original armor-mitigated amount , a net loss. THREATS_ON_SELF entry correctly tags save="informational" → dispatcher no-op via v6.15.202 (D1) catch-all.
+    modifier_axe_berserkers_call         = { "magic_immune", "damage_return" },  -- LISTED FOR COMPLETENESS BUT NEITHER ACTUALLY COUNTERS: Berserker's Call pierces spell immunity (BKB does nothing), and Blade Mail returns Sniper's own attack damage at full vs the original armor-mitigated amount - a net loss. THREATS_ON_SELF entry correctly tags save="informational" → dispatcher no-op via v6.15.202 (D1) catch-all.
     -- v6.7 extrapolation entries (modifier names marked (verify) need in-game check)
     modifier_shadow_shaman_voodoo        = { "invuln", "magic_immune", "reflect_target", "dispel_basic" },
     modifier_zuus_lightning_bolt         = { "invuln", "magic_immune", "magic_barrier", "reflect_target" },
@@ -261,8 +261,8 @@ ThreatData.THREAT_COUNTER = {
     modifier_life_stealer_open_wounds    = { "dispel_basic", "invis", "invuln", "physical_immune", "damage_block", "damage_return" },
     modifier_pugna_life_drain            = { "invuln", "displacement_far", "displacement_blink", "dispel_basic" },
     -- v6.15.10: Disruptor Kinetic Field. The wall blocks forced movement
-    -- (Pike, Force, Blink) entirely , only knockback motion crosses it.
-    -- User-observed in 7.41C. (verify modifier name , likely
+    -- (Pike, Force, Blink) entirely - only knockback motion crosses it.
+    -- User-observed in 7.41C. (verify modifier name - likely
     -- modifier_disruptor_kinetic_field_remnant once empirically confirmed
     -- via modseen.)
     modifier_disruptor_kinetic_field_remnant = { "displacement_perp" },
@@ -271,19 +271,19 @@ ThreatData.THREAT_COUNTER = {
     -- root. Same escape profile as Kinetic Field: only knockback motion
     -- (grenade-self push, pike-self push, Force push) reliably moves
     -- Sniper out of the pit. Blink works too (the pit doesn't block
-    -- teleports). (verify) , modifier name from KV naming convention,
+    -- teleports). (verify) - modifier name from KV naming convention,
     -- not yet harvested from a real match.
     modifier_abyssal_underlord_pit_of_malice_ensare = { "displacement_perp", "displacement_blink" },
 }
 
 ----------------------------------------------------------------------------
--- SAVE_PUSH_DISTANCE , how far each displacement save moves the user
+-- SAVE_PUSH_DISTANCE - how far each displacement save moves the user
 ----------------------------------------------------------------------------
 
 ---Save key → push distance in units. Non-displacement saves omitted
 ---(treated as 0 and not constrained by tether geometry).
 ---@type table<string, number>
--- Pike-on-enemy push = 425. Pike pushes radially outward from caster , both
+-- Pike-on-enemy push = 425. Pike pushes radially outward from caster - both
 -- caster and enemy move apart. Pike-on-self push = 600 but direction =
 -- Sniper's facing (often toward threat). The brain prefers Pike-on-enemy
 -- whenever the enemy is in 425u cast range; otherwise falls back to
@@ -291,7 +291,7 @@ ThreatData.THREAT_COUNTER = {
 -- (enemy_push) since that's the reliable-direction case for tether breaks.
 -- v6.15.208 (KV-derivation): the item entries derive from
 -- item_data.SAVE_GEOMETRY (the generated table item_data's docstring
--- designates as the grounding source for SAVE_PUSH_DISTANCE) , displacement
+-- designates as the grounding source for SAVE_PUSH_DISTANCE) - displacement
 -- items take enemy_push, blink items take range. The literal in each sg()
 -- call is a patch-stable fallback only. grenade_self stays literal: it is a
 -- Sniper ability (npc_abilities KV), not an item, so SAVE_GEOMETRY has no
@@ -308,7 +308,7 @@ ThreatData.SAVE_PUSH_DISTANCE = {
 }
 
 ----------------------------------------------------------------------------
--- THREAT_TETHER_RANGE , distance at which a tether channel breaks
+-- THREAT_TETHER_RANGE - distance at which a tether channel breaks
 ----------------------------------------------------------------------------
 
 ---Threat modifier → tether range in units. Sniper-to-caster distance plus
@@ -317,10 +317,10 @@ ThreatData.SAVE_PUSH_DISTANCE = {
 ---@type table<string, number>
 -- v6.7 (2026-05-11): cross-checked against Liquipedia 7.41C.
 -- Static Link 900 → 800, Mana Drain 850 → 1000, Death Ward 1100 → 650.
--- Death Ward "tether" was way off , actual ward attack range is 650 at
+-- Death Ward "tether" was way off - actual ward attack range is 650 at
 -- level 3 (was using a fictional 1100). Old value caused over-saves where
 -- the brain thought Death Ward reached farther than it does.
--- Shaman Shackles 800 is a HEURISTIC , Liquipedia documents no actual
+-- Shaman Shackles 800 is a HEURISTIC - Liquipedia documents no actual
 -- distance-break for Shackles (channel only breaks via stun/silence/
 -- disjoint). Kept for the displacement save's geometry score but flagged.
 -- Bane Fiend Grip 875 is unverified by Liquipedia text (cast range 625;
@@ -336,7 +336,7 @@ ThreatData.THREAT_TETHER_RANGE = {
 }
 
 ----------------------------------------------------------------------------
--- THREATS_ON_SELF , modifier names hero scripts react to via OnModifierCreate
+-- THREATS_ON_SELF - modifier names hero scripts react to via OnModifierCreate
 ----------------------------------------------------------------------------
 
 ---Modifier → { role, save } metadata. `role` drives the dispatch path in the
@@ -378,8 +378,8 @@ ThreatData.THREATS_ON_SELF = {
     modifier_phantom_assassin_phantom_strike_target = { role = "gap_close", save = "glimmer_or_pike" },
     modifier_spirit_breaker_charge_of_darkness      = { role = "gap_close", save = "pike_or_grenade" },
     modifier_tusk_snowball_movement                 = { role = "gap_close", save = "pike_or_grenade" },
-    modifier_kez_grappling_claw_slow                     = { role = "gap_close", save = "pike_or_grenade" },  -- v6.15.162 (verify) , Kez Grappling Claw
-    -- v6.15.163 batch 1 , modern hero pool (verify modifier names via modseen)
+    modifier_kez_grappling_claw_slow                     = { role = "gap_close", save = "pike_or_grenade" },  -- v6.15.162 (verify) - Kez Grappling Claw
+    -- v6.15.163 batch 1 - modern hero pool (verify modifier names via modseen)
     modifier_ringmaster_impalement                  = { role = "line_projectile", save = "perp_displacement" },
     modifier_marci_grapple                          = { role = "gap_close",       save = "pike_or_grenade" },
     modifier_muerta_dead_shot                       = { role = "hard_disable",     save = "eul_or_bkb" },
@@ -392,7 +392,7 @@ ThreatData.THREATS_ON_SELF = {
     modifier_grimstroke_ink_creature                = { role = "hard_disable",     save = "dispel_or_bkb" },
     modifier_pangolier_swashbuckle                  = { role = "gap_close",        save = "pike_or_grenade" },
     modifier_dark_willow_cursed_crown               = { role = "hard_disable",     save = "eul_or_bkb" },
-    -- v6.15.164 batch 2 , older-hero kidnaps / gap-closes / catches
+    -- v6.15.164 batch 2 - older-hero kidnaps / gap-closes / catches
     modifier_faceless_void_chronosphere_freeze             = { role = "delayed_aoe",      save = "blink_or_bkb" },
     modifier_batrider_flaming_lasso                 = { role = "hard_disable",     save = "bkb_or_eul" },
     modifier_tiny_toss                              = { role = "hard_disable",     save = "eul_or_bkb" },
@@ -444,63 +444,63 @@ ThreatData.THREATS_ON_SELF = {
     -- v6.15.258 zero-coverage fill batch 1: single-target stuns / silences
     -- from heroes Sniper actually faces. All modifier names are (verify) --
     -- guessed from KV ability names; demos will confirm via threat_unrecognized.
-    modifier_dragon_knight_dragon_tail   = { role = "hard_disable",  save = "eul_or_bkb" },         -- (verify) , 0.45 cast, 1.7-2.75s stun
-    modifier_night_stalker_void          = { role = "hard_disable",  save = "eul_or_bkb" },         -- (verify) , 0.3 cast, mini-stun + slow (full stun at night)
-    modifier_ogre_magi_fireblast         = { role = "hard_disable",  save = "eul_or_bkb" },         -- (verify) , 0.45 cast, 1.5-2.4s stun
-    modifier_rubick_telekinesis_stun          = { role = "hard_disable",  save = "eul_or_bkb" },         -- (verify) , 0.1 cast, lift+land stun
-    modifier_silencer_last_word          = { role = "silence_on_me", save = "bkb_or_dispel" },      -- (verify) , silence on cast / 4s timer
-    modifier_death_prophet_silence       = { role = "silence_on_me", save = "bkb_or_dispel" },      -- (verify) , point-AOE 5-6s silence
+    modifier_dragon_knight_dragon_tail   = { role = "hard_disable",  save = "eul_or_bkb" },         -- (verify) - 0.45 cast, 1.7-2.75s stun
+    modifier_night_stalker_void          = { role = "hard_disable",  save = "eul_or_bkb" },         -- (verify) - 0.3 cast, mini-stun + slow (full stun at night)
+    modifier_ogre_magi_fireblast         = { role = "hard_disable",  save = "eul_or_bkb" },         -- (verify) - 0.45 cast, 1.5-2.4s stun
+    modifier_rubick_telekinesis_stun          = { role = "hard_disable",  save = "eul_or_bkb" },         -- (verify) - 0.1 cast, lift+land stun
+    modifier_silencer_last_word          = { role = "silence_on_me", save = "bkb_or_dispel" },      -- (verify) - silence on cast / 4s timer
+    modifier_death_prophet_silence       = { role = "silence_on_me", save = "bkb_or_dispel" },      -- (verify) - point-AOE 5-6s silence
     -- v6.15.263 zero-coverage fill batch 2: AOE delayed killers + single-target
     -- bursts Sniper actually faces. Anim-path detection is primary for abilities
     -- without a Sniper-side modifier (Mana Void, Sunder).
-    modifier_cold_feet     = { role = "hard_disable", save = "eul_or_bkb" },        -- (verify) , 4s timer, stun if Sniper hasn't moved 715u
-    modifier_ice_blast     = { role = "magic_burst",  save = "bkb_or_lotus" },      -- (verify) , frost mark, executes <12% HP. BKB blocks (SPELL_IMMUNITY_ENEMIES_YES)
-    modifier_gyrocopter_homing_missile        = { role = "line_projectile", save = "perp_displacement" },  -- (verify) , homing target debuff, missile is dodgeable
-    modifier_gyrocopter_call_down_slow        = { role = "kiting_slow",  save = "informational" },     -- (verify) , per-rocket slow proc
-    modifier_kunkka_torrent_thinker           = { role = "delayed_aoe",  save = "displacement" },      -- (verify) , geyser warning placed, hits ~1.5s later
-    modifier_kunkka_torrent_stun              = { role = "hard_disable", save = "eul_or_bkb" },        -- (verify) , stun applied at geyser impact
-    modifier_kunkka_x_marks_the_spot          = { role = "hard_disable", save = "bkb_or_dispel" },     -- (verify) , drag-back debuff, removable by dispel
-    modifier_nevermore_requiem                = { role = "magic_burst",  save = "bkb_or_lotus" },      -- (verify) , fear + magic damage radial
+    modifier_cold_feet     = { role = "hard_disable", save = "eul_or_bkb" },        -- (verify) - 4s timer, stun if Sniper hasn't moved 715u
+    modifier_ice_blast     = { role = "magic_burst",  save = "bkb_or_lotus" },      -- (verify) - frost mark, executes <12% HP. BKB blocks (SPELL_IMMUNITY_ENEMIES_YES)
+    modifier_gyrocopter_homing_missile        = { role = "line_projectile", save = "perp_displacement" },  -- (verify) - homing target debuff, missile is dodgeable
+    modifier_gyrocopter_call_down_slow        = { role = "kiting_slow",  save = "informational" },     -- (verify) - per-rocket slow proc
+    modifier_kunkka_torrent_thinker           = { role = "delayed_aoe",  save = "displacement" },      -- (verify) - geyser warning placed, hits ~1.5s later
+    modifier_kunkka_torrent_stun              = { role = "hard_disable", save = "eul_or_bkb" },        -- (verify) - stun applied at geyser impact
+    modifier_kunkka_x_marks_the_spot          = { role = "hard_disable", save = "bkb_or_dispel" },     -- (verify) - drag-back debuff, removable by dispel
+    modifier_nevermore_requiem                = { role = "magic_burst",  save = "bkb_or_lotus" },      -- (verify) - fear + magic damage radial
     -- v6.15.265 zero-coverage fill batch 3: mid-game mixed threats
-    modifier_doom_bringer_infernal_blade      = { role = "hard_disable", save = "eul_or_bkb" },        -- (verify) , autocast mini-stun + damage on Doom right-clicks
-    modifier_furion_sprout                    = { role = "hard_disable", save = "bkb_or_dispel" },     -- (verify) , root cage; basic dispel (Manta) removes the trees
-    modifier_visage_grave_chill               = { role = "hard_disable", save = "bkb_or_dispel" },     -- (verify) , slow + silence steal
-    modifier_venomancer_venomous_gale         = { role = "kiting_slow",  save = "bkb_or_dispel" },     -- (verify) , slow + dot line; dispel removes
-    modifier_spectre_spectral_dagger          = { role = "kiting_slow",  save = "bkb_or_dispel" },     -- (verify) , slow + can-chase-through-walls debuff
+    modifier_doom_bringer_infernal_blade      = { role = "hard_disable", save = "eul_or_bkb" },        -- (verify) - autocast mini-stun + damage on Doom right-clicks
+    modifier_furion_sprout                    = { role = "hard_disable", save = "bkb_or_dispel" },     -- (verify) - root cage; basic dispel (Manta) removes the trees
+    modifier_visage_grave_chill               = { role = "hard_disable", save = "bkb_or_dispel" },     -- (verify) - slow + silence steal
+    modifier_venomancer_venomous_gale         = { role = "kiting_slow",  save = "bkb_or_dispel" },     -- (verify) - slow + dot line; dispel removes
+    modifier_spectre_spectral_dagger          = { role = "kiting_slow",  save = "bkb_or_dispel" },     -- (verify) - slow + can-chase-through-walls debuff
     -- v6.15.266 zero-coverage fill batch 4: carry / active threats
-    modifier_juggernaut_omni_slash            = { role = "channel_on_me", save = "bkb_or_eul" },       -- (verify) , 4s channel, target locked + massive damage; BKB / Aeon / Manta dispel
-    modifier_phantom_lancer_spirit_lance      = { role = "kiting_slow",  save = "informational" },     -- (verify) , slow + damage proc, recoverable
-    modifier_meepo_earthbind                  = { role = "hard_disable", save = "bkb_or_dispel" },     -- (verify) , 2s root delayed AoE, dispel removes
-    modifier_monkey_king_wukongs_command_aura = { role = "delayed_aoe",  save = "displacement" },      -- (verify) , cage area, clones attack inside
-    modifier_slardar_amplify_damage           = { role = "kiting_slow",  save = "bkb_or_dispel" },     -- (verify) , armor reduction debuff, dispellable
-    modifier_slardar_slithereen_crush         = { role = "hard_disable", save = "eul_or_bkb" },        -- (verify) , AoE stun around Slardar
-    modifier_bristleback_hairball_slow        = { role = "kiting_slow",  save = "informational" },     -- (verify) , line of goo slows, recoverable
+    modifier_juggernaut_omni_slash            = { role = "channel_on_me", save = "bkb_or_eul" },       -- (verify) - 4s channel, target locked + massive damage; BKB / Aeon / Manta dispel
+    modifier_phantom_lancer_spirit_lance      = { role = "kiting_slow",  save = "informational" },     -- (verify) - slow + damage proc, recoverable
+    modifier_meepo_earthbind                  = { role = "hard_disable", save = "bkb_or_dispel" },     -- (verify) - 2s root delayed AoE, dispel removes
+    modifier_monkey_king_wukongs_command_aura = { role = "delayed_aoe",  save = "displacement" },      -- (verify) - cage area, clones attack inside
+    modifier_slardar_amplify_damage           = { role = "kiting_slow",  save = "bkb_or_dispel" },     -- (verify) - armor reduction debuff, dispellable
+    modifier_slardar_slithereen_crush         = { role = "hard_disable", save = "eul_or_bkb" },        -- (verify) - AoE stun around Slardar
+    modifier_bristleback_hairball_slow        = { role = "kiting_slow",  save = "informational" },     -- (verify) - line of goo slows, recoverable
     -- v6.15.267 zero-coverage fill batch 5: reactive-detectable threats
-    modifier_invoker_cold_snap_freeze         = { role = "hard_disable", save = "bkb_or_dispel" },     -- (verify) , recurring mini-stun on damage; dispel removes
-    modifier_riki_smoke_screen                = { role = "silence_on_me", save = "bkb_or_dispel" },    -- (verify) , AoE silence + miss chance
-    modifier_lone_druid_entangle_effect       = { role = "hard_disable", save = "bkb_or_dispel" },     -- (verify) , bear-attack root proc (1.5s)
-    modifier_undying_decay                    = { role = "kiting_slow",  save = "bkb_or_dispel" },     -- (verify) , STR drain debuff (reduces Sniper max HP)
-    modifier_dazzle_poison_touch              = { role = "kiting_slow",  save = "bkb_or_dispel" },     -- (verify) , slow + delayed stun if not removed
-    modifier_weaver_the_swarm                 = { role = "kiting_slow",  save = "bkb_or_dispel" },     -- (verify) , armor reduction + attack-trigger damage
+    modifier_invoker_cold_snap_freeze         = { role = "hard_disable", save = "bkb_or_dispel" },     -- (verify) - recurring mini-stun on damage; dispel removes
+    modifier_riki_smoke_screen                = { role = "silence_on_me", save = "bkb_or_dispel" },    -- (verify) - AoE silence + miss chance
+    modifier_lone_druid_entangle_effect       = { role = "hard_disable", save = "bkb_or_dispel" },     -- (verify) - bear-attack root proc (1.5s)
+    modifier_undying_decay                    = { role = "kiting_slow",  save = "bkb_or_dispel" },     -- (verify) - STR drain debuff (reduces Sniper max HP)
+    modifier_dazzle_poison_touch              = { role = "kiting_slow",  save = "bkb_or_dispel" },     -- (verify) - slow + delayed stun if not removed
+    modifier_weaver_the_swarm                 = { role = "kiting_slow",  save = "bkb_or_dispel" },     -- (verify) - armor reduction + attack-trigger damage
     -- v6.15.268 zero-coverage fill batch 6: stuns + snares + nukes
-    modifier_alchemist_unstable_concoction    = { role = "hard_disable", save = "eul_or_bkb" },        -- (verify) , variable stun (1-4s based on charge), instant when thrown
-    modifier_broodmother_sticky_snare         = { role = "hard_disable", save = "bkb_or_dispel" },     -- (verify) , 2s root from placed snare; dispellable
-    modifier_medusa_gorgon_grasp              = { role = "hard_disable", save = "eul_or_bkb" },        -- (verify) , point-AOE stun
-    modifier_medusa_mystic_snake              = { role = "kiting_slow",  save = "informational" },     -- (verify) , bouncing damage + mana drain, recoverable
-    modifier_troll_warlord_whirling_axes_ranged = { role = "silence_on_me", save = "bkb_or_dispel" }, -- (verify) , multi-axe silence + damage
-    modifier_dark_seer_vacuum                 = { role = "hard_disable", save = "bkb_or_dispel" },     -- (verify) , pulls Sniper to vacuum point; BKB blocks
-    modifier_dark_seer_ion_shell              = { role = "kiting_slow",  save = "informational" },     -- (verify) , area damage aura around target; doesn't stop kiting
-    modifier_ember_spirit_sleight_of_fist_caster = { role = "kiting_slow", save = "informational" }, -- (verify) , Ember in untargetable phase; informational
+    modifier_alchemist_unstable_concoction    = { role = "hard_disable", save = "eul_or_bkb" },        -- (verify) - variable stun (1-4s based on charge), instant when thrown
+    modifier_broodmother_sticky_snare         = { role = "hard_disable", save = "bkb_or_dispel" },     -- (verify) - 2s root from placed snare; dispellable
+    modifier_medusa_gorgon_grasp              = { role = "hard_disable", save = "eul_or_bkb" },        -- (verify) - point-AOE stun
+    modifier_medusa_mystic_snake              = { role = "kiting_slow",  save = "informational" },     -- (verify) - bouncing damage + mana drain, recoverable
+    modifier_troll_warlord_whirling_axes_ranged = { role = "silence_on_me", save = "bkb_or_dispel" }, -- (verify) - multi-axe silence + damage
+    modifier_dark_seer_vacuum                 = { role = "hard_disable", save = "bkb_or_dispel" },     -- (verify) - pulls Sniper to vacuum point; BKB blocks
+    modifier_dark_seer_ion_shell              = { role = "kiting_slow",  save = "informational" },     -- (verify) - area damage aura around target; doesn't stop kiting
+    modifier_ember_spirit_sleight_of_fist_caster = { role = "kiting_slow", save = "informational" }, -- (verify) - Ember in untargetable phase; informational
     -- v6.15.269 zero-coverage fill batch 7: remaining mid-impact threats
-    modifier_bounty_hunter_shuriken_toss      = { role = "kiting_slow",  save = "informational" },     -- (verify) , slow + damage proc, recoverable
-    modifier_brewmaster_cinder_brew           = { role = "kiting_slow",  save = "bkb_or_dispel" },     -- (verify) , POINT-AOE slow + dot, ignites on damage; dispel removes
-    modifier_phoenix_sun_ray                  = { role = "kiting_slow",  save = "informational" },     -- (verify) , line beam damage + slow (Phoenix channels)
-    modifier_shredder_chakram                 = { role = "kiting_slow",  save = "bkb_or_dispel" },     -- (verify) , chakram line slow + disarm
-    modifier_arc_warden_flux                  = { role = "kiting_slow",  save = "bkb_or_dispel" },     -- (verify) , damage-when-isolated debuff; dispel breaks the lone-target check
+    modifier_bounty_hunter_shuriken_toss      = { role = "kiting_slow",  save = "informational" },     -- (verify) - slow + damage proc, recoverable
+    modifier_brewmaster_cinder_brew           = { role = "kiting_slow",  save = "bkb_or_dispel" },     -- (verify) - POINT-AOE slow + dot, ignites on damage; dispel removes
+    modifier_phoenix_sun_ray                  = { role = "kiting_slow",  save = "informational" },     -- (verify) - line beam damage + slow (Phoenix channels)
+    modifier_shredder_chakram                 = { role = "kiting_slow",  save = "bkb_or_dispel" },     -- (verify) - chakram line slow + disarm
+    modifier_arc_warden_flux                  = { role = "kiting_slow",  save = "bkb_or_dispel" },     -- (verify) - damage-when-isolated debuff; dispel breaks the lone-target check
     -- v6.15.270 zero-coverage final mop-up
-    modifier_chen_penitence                   = { role = "kiting_slow",  save = "bkb_or_dispel" },     -- (verify) , slow + damage amp on Sniper
-    modifier_omniknight_hammer_of_purity      = { role = "kiting_slow",  save = "informational" },     -- (verify) , autocast purity attack proc, single-target damage
-    modifier_largo_catchy_lick                = { role = "kiting_slow",  save = "informational" },     -- (verify) , Largo lick debuff, single-target proc
+    modifier_chen_penitence                   = { role = "kiting_slow",  save = "bkb_or_dispel" },     -- (verify) - slow + damage amp on Sniper
+    modifier_omniknight_hammer_of_purity      = { role = "kiting_slow",  save = "informational" },     -- (verify) - autocast purity attack proc, single-target damage
+    modifier_largo_catchy_lick                = { role = "kiting_slow",  save = "informational" },     -- (verify) - Largo lick debuff, single-target proc
     -- v6.15.271 ranked-match harvest: real modifier names verified from
     -- threat_unrecognized log lines in a 100k-line live match.
     modifier_tusk_snowball_target             = { role = "hard_disable", save = "eul_or_bkb" },         -- harvested 2026-05-24: root + delivery debuff on Sniper after snowball impact
@@ -546,31 +546,31 @@ ThreatData.THREATS_ON_SELF = {
     modifier_maledict_dot                     = { role = "kiting_slow",  save = "bkb_or_dispel" },     -- harvested 2026-05-25: WD Maledict periodic damage tick
     -- v6.7 extrapolation (2026-05-11). Modifier names marked (verify) need
     -- in-game confirmation via :FindAllModifiers() print before relying on.
-    modifier_shadow_shaman_voodoo        = { role = "hard_disable",  save = "lotus_or_eul" },           -- (verify) , Hex
+    modifier_shadow_shaman_voodoo        = { role = "hard_disable",  save = "lotus_or_eul" },           -- (verify) - Hex
     modifier_zuus_lightning_bolt         = { role = "magic_burst",   save = "bkb_or_lotus" },          -- (verify)
-    modifier_zuus_thundergods_wrath      = { role = "magic_burst",   save = "bkb_or_pipe" },           -- (verify) , global ult, 2s cast point
+    modifier_zuus_thundergods_wrath      = { role = "magic_burst",   save = "bkb_or_pipe" },           -- (verify) - global ult, 2s cast point
     modifier_tidehunter_ravage           = { role = "delayed_aoe",   save = "bkb_or_blink" },          -- (verify)
     modifier_earthshaker_echo_slam       = { role = "delayed_aoe",   save = "bkb_or_blink" },          -- (verify)
-    modifier_magnataur_reverse_polarity_stun  = { role = "delayed_aoe",   save = "bkb_or_blink" },          -- (verify) , 1700u radius
-    modifier_disruptor_static_storm_thinker = { role = "delayed_aoe", save = "displacement_or_bkb" },  -- (verify) , channel
-    modifier_treant_overgrowth           = { role = "delayed_aoe",   save = "blink_or_manta" },        -- (verify) , AoE root
-    modifier_magnataur_skewer            = { role = "line_projectile", save = "perp_displacement" },   -- (verify) , pre_cast save
+    modifier_magnataur_reverse_polarity_stun  = { role = "delayed_aoe",   save = "bkb_or_blink" },          -- (verify) - 1700u radius
+    modifier_disruptor_static_storm_thinker = { role = "delayed_aoe", save = "displacement_or_bkb" },  -- (verify) - channel
+    modifier_treant_overgrowth           = { role = "delayed_aoe",   save = "blink_or_manta" },        -- (verify) - AoE root
+    modifier_magnataur_skewer            = { role = "line_projectile", save = "perp_displacement" },   -- (verify) - pre_cast save
     modifier_sven_storm_bolt             = { role = "line_projectile", save = "perp_displacement" },   -- (verify)
     modifier_earth_spirit_rolling_boulder= { role = "line_projectile", save = "perp_displacement" },   -- (verify)
-    modifier_life_stealer_open_wounds    = { role = "physical_burst", save = "manta_or_pike" },        -- (verify) , debuff
-    modifier_pugna_life_drain            = { role = "drain",         save = "force_or_pike" },         -- (verify) , channel
-    -- v6.15.10: Disruptor Kinetic Field , trapped. Only knockback escapes.
+    modifier_life_stealer_open_wounds    = { role = "physical_burst", save = "manta_or_pike" },        -- (verify) - debuff
+    modifier_pugna_life_drain            = { role = "drain",         save = "force_or_pike" },         -- (verify) - channel
+    -- v6.15.10: Disruptor Kinetic Field - trapped. Only knockback escapes.
     modifier_disruptor_kinetic_field_remnant = { role = "trapped",   save = "knockback_only" },         -- (verify)
-    -- v6.15.256: Underlord Pit of Malice , same trapped pattern as Kinetic
+    -- v6.15.256: Underlord Pit of Malice - same trapped pattern as Kinetic
     -- Field. Snare ticks ~3.6s for 12s; escape via displacement breaks the
     -- root and removes Sniper from the 400u pit area.
     modifier_abyssal_underlord_pit_of_malice_ensare = { role = "trapped",   save = "knockback_only" },         -- (verify)
-    -- v6.15.198 harvest , modifier names captured from threat_unrecognized
+    -- v6.15.198 harvest - modifier names captured from threat_unrecognized
     -- across three bot matches (post v6.15.194 / .195 / .197). All names
     -- below are HARVESTED (observed in real logs), not guessed; remove the
     -- (verify) caveat for any entry that's confirmed via repeat hits.
     -- Most are kiting / DOT threats Sniper just tanks (save="informational")
-    -- , they exist in the catalog so threat_unrecognized stops re-logging
+    -- - they exist in the catalog so threat_unrecognized stops re-logging
     -- them and so the brain's score-bonus / save-chain dispatcher knows
     -- the kind. Genuine R-blockers (silence, channel-on-me, dispel) get
     -- a real save mapping.
@@ -583,14 +583,14 @@ ThreatData.THREATS_ON_SELF = {
     modifier_skeleton_king_reincarnation_spawn_skeletons = { role = "aux",     save = "informational"  },  -- harvested 2026-05-20: spawn marker; the skeletons are a separate threat
     modifier_viper_corrosive_skin_slow          = { role = "attacker_slow",    save = "informational"  },  -- harvested 2026-05-20: slow on Viper's attackers; counter is to stop attacking
     modifier_viper_nethertoxin                  = { role = "zone_dot",         save = "informational"  },  -- harvested 2026-05-20: AoE zone DOT; counter is to leave the zone
-    modifier_viper_nethertoxin_mute             = { role = "silence_on_me",    save = "bkb_or_dispel"  },  -- harvested 2026-05-20: silence at full Nethertoxin stacks , REAL R-blocker
+    modifier_viper_nethertoxin_mute             = { role = "silence_on_me",    save = "bkb_or_dispel"  },  -- harvested 2026-05-20: silence at full Nethertoxin stacks - REAL R-blocker
     modifier_viper_poison_attack_slow           = { role = "kiting_slow",      save = "bkb_or_dispel"  },  -- harvested 2026-05-20: Viper Q applied via auto, slow + DOT
     modifier_necrolyte_heartstopper_aura_effect = { role = "aura_dot",         save = "informational"  },  -- harvested 2026-05-20: %-max-HP aura DOT; counter is move out of range (~1500u)
     modifier_vengefulspirit_retribution_tracker = { role = "tracker",          save = "informational"  },  -- harvested 2026-05-20: VS shard/talent tracker; no direct threat
 }
 
 ----------------------------------------------------------------------------
--- LOTUS_WORTHY_INCOMING , single-target enemy ults Lotus reflects
+-- LOTUS_WORTHY_INCOMING - single-target enemy ults Lotus reflects
 ----------------------------------------------------------------------------
 
 ---@type table<string, boolean>
@@ -600,7 +600,7 @@ ThreatData.LOTUS_WORTHY_INCOMING = {
 }
 
 ----------------------------------------------------------------------------
--- CAST_POINT_THREATS , pre-cast-armed threats with sub-second windows
+-- CAST_POINT_THREATS - pre-cast-armed threats with sub-second windows
 ----------------------------------------------------------------------------
 --
 -- v0.5.39 BUG-3: enemy ults / nukes that have a meaningful cast-point window
@@ -662,7 +662,7 @@ ThreatData.CAST_POINT_THREATS = {
 }
 
 ----------------------------------------------------------------------------
--- ENEMY_CHANNEL_MODIFIERS , Layer 1.5 channel-punish / TP-interrupt triggers
+-- ENEMY_CHANNEL_MODIFIERS - Layer 1.5 channel-punish / TP-interrupt triggers
 ----------------------------------------------------------------------------
 
 ---@type table<string, boolean>
@@ -679,7 +679,7 @@ ThreatData.ENEMY_CHANNEL_MODIFIERS = {
 }
 
 ----------------------------------------------------------------------------
--- WORTHY_CHANNEL_ABILITIES , allowlist for the channel-interrupt bonus
+-- WORTHY_CHANNEL_ABILITIES - allowlist for the channel-interrupt bonus
 ----------------------------------------------------------------------------
 -- Keyed by the CHANNELLING ability name (what GetChannellingAbility +
 -- Ability.GetName returns on the casting hero), NOT the modifier name -- the
@@ -705,7 +705,7 @@ ThreatData.WORTHY_CHANNEL_ABILITIES = {
 }
 
 ----------------------------------------------------------------------------
--- ABILITY_TO_THREAT , ability name (from anim events) → threat modifier
+-- ABILITY_TO_THREAT - ability name (from anim events) → threat modifier
 ----------------------------------------------------------------------------
 
 ---@type table<string, string|nil>
@@ -716,12 +716,12 @@ ThreatData.ABILITY_TO_THREAT = {
     pudge_dismember                     = "modifier_pudge_dismember_pull",
     pudge_meat_hook                     = "modifier_pudge_meat_hook",
     spirit_breaker_charge_of_darkness   = "modifier_spirit_breaker_charge_of_darkness",
-    spirit_breaker_nether_strike        = "modifier_spirit_breaker_nether_strike",  -- v6.15.164 (verify) , promoted from nil: blink-strike ult
+    spirit_breaker_nether_strike        = "modifier_spirit_breaker_nether_strike",  -- v6.15.164 (verify) - promoted from nil: blink-strike ult
     tusk_snowball                       = "modifier_tusk_snowball_movement",
-    kez_grappling_claw                  = "modifier_kez_grappling_claw_slow",       -- v6.15.162 (verify) , Kez gap-close swing
-    -- v6.15.163 , defense catalog refresh, batch 1: the modern hero pool.
+    kez_grappling_claw                  = "modifier_kez_grappling_claw_slow",       -- v6.15.162 (verify) - Kez gap-close swing
+    -- v6.15.163 - defense catalog refresh, batch 1: the modern hero pool.
     -- KV exposes no modifier names, so every modifier_<ability> below is a
-    -- best-effort (verify) guess , confirm via the threat_unrecognized harvest
+    -- best-effort (verify) guess - confirm via the threat_unrecognized harvest
     -- log and correct any wrong suffix.
     ringmaster_impalement               = "modifier_ringmaster_impalement",
     marci_grapple                       = "modifier_marci_grapple",
@@ -735,7 +735,7 @@ ThreatData.ABILITY_TO_THREAT = {
     grimstroke_ink_creature             = "modifier_grimstroke_ink_creature",
     pangolier_swashbuckle               = "modifier_pangolier_swashbuckle",
     dark_willow_cursed_crown            = "modifier_dark_willow_cursed_crown",
-    -- v6.15.164 , batch 2: older-hero kidnaps / gap-closes / catches.
+    -- v6.15.164 - batch 2: older-hero kidnaps / gap-closes / catches.
     faceless_void_chronosphere          = "modifier_faceless_void_chronosphere_freeze",
     batrider_flaming_lasso              = "modifier_batrider_flaming_lasso",
     tiny_toss                           = "modifier_tiny_toss",
@@ -747,7 +747,7 @@ ThreatData.ABILITY_TO_THREAT = {
     nyx_assassin_impale                 = "modifier_nyx_assassin_impale",
     -- batch 3-4 (defense catalog refresh, 2026-05-17): executes, targeted
     -- disables, channels, delayed-AoE / traps, gap-close secondaries.
-    -- modifier_<ability> guesses, all (verify) , corrected via threat_unrecognized.
+    -- modifier_<ability> guesses, all (verify) - corrected via threat_unrecognized.
     necrolyte_reapers_scythe            = "modifier_necrolyte_reapers_scythe",
     obsidian_destroyer_sanity_eclipse   = "modifier_obsidian_destroyer_sanity_eclipse",
     lich_chain_frost                    = "modifier_lich_chain_frost",
@@ -811,7 +811,7 @@ ThreatData.ABILITY_TO_THREAT = {
     magnataur_reverse_polarity          = "modifier_magnataur_reverse_polarity_stun",       -- (verify)
     earth_spirit_rolling_boulder        = "modifier_earth_spirit_rolling_boulder",     -- (verify)
     sven_storm_bolt                     = "modifier_sven_storm_bolt",                  -- (verify)
-    shadow_shaman_voodoo                = "modifier_shadow_shaman_voodoo",             -- (verify) , Hex
+    shadow_shaman_voodoo                = "modifier_shadow_shaman_voodoo",             -- (verify) - Hex
     zuus_lightning_bolt                 = "modifier_zuus_lightning_bolt",              -- (verify)
     zuus_thundergods_wrath              = "modifier_zuus_thundergods_wrath",           -- (verify)
     tidehunter_ravage                   = "modifier_tidehunter_ravage",                -- (verify)
@@ -820,79 +820,79 @@ ThreatData.ABILITY_TO_THREAT = {
     treant_overgrowth                   = "modifier_treant_overgrowth",                -- (verify)
     life_stealer_open_wounds            = "modifier_life_stealer_open_wounds",         -- (verify)
     pugna_life_drain                    = "modifier_pugna_life_drain",                 -- (verify)
-    disruptor_kinetic_field             = "modifier_disruptor_kinetic_field_remnant",  -- (verify) , v6.15.10
-    abyssal_underlord_pit_of_malice     = "modifier_abyssal_underlord_pit_of_malice_ensare",   -- (verify) , v6.15.256
+    disruptor_kinetic_field             = "modifier_disruptor_kinetic_field_remnant",  -- (verify) - v6.15.10
+    abyssal_underlord_pit_of_malice     = "modifier_abyssal_underlord_pit_of_malice_ensare",   -- (verify) - v6.15.256
     -- v6.15.258 zero-coverage fill batch 1
-    dragon_knight_dragon_tail           = "modifier_dragon_knight_dragon_tail",          -- (verify) , v6.15.258
-    night_stalker_void                  = "modifier_night_stalker_void",                 -- (verify) , v6.15.258
-    ogre_magi_fireblast                 = "modifier_ogre_magi_fireblast",                -- (verify) , v6.15.258
-    ogre_magi_unrefined_fireblast       = "modifier_ogre_magi_fireblast",                -- (verify) , v6.15.258 (shares modifier with fireblast)
-    rubick_telekinesis                  = "modifier_rubick_telekinesis_stun",                 -- (verify) , v6.15.258
-    silencer_last_word                  = "modifier_silencer_last_word",                 -- (verify) , v6.15.258
-    death_prophet_silence               = "modifier_death_prophet_silence",              -- (verify) , v6.15.258
+    dragon_knight_dragon_tail           = "modifier_dragon_knight_dragon_tail",          -- (verify) - v6.15.258
+    night_stalker_void                  = "modifier_night_stalker_void",                 -- (verify) - v6.15.258
+    ogre_magi_fireblast                 = "modifier_ogre_magi_fireblast",                -- (verify) - v6.15.258
+    ogre_magi_unrefined_fireblast       = "modifier_ogre_magi_fireblast",                -- (verify) - v6.15.258 (shares modifier with fireblast)
+    rubick_telekinesis                  = "modifier_rubick_telekinesis_stun",                 -- (verify) - v6.15.258
+    silencer_last_word                  = "modifier_silencer_last_word",                 -- (verify) - v6.15.258
+    death_prophet_silence               = "modifier_death_prophet_silence",              -- (verify) - v6.15.258
     -- v6.15.263 zero-coverage fill batch 2: AOE delayed killers
-    ancient_apparition_cold_feet        = "modifier_cold_feet",       -- (verify) , v6.15.263
-    ancient_apparition_ice_blast        = "modifier_ice_blast",       -- (verify) , v6.15.263
+    ancient_apparition_cold_feet        = "modifier_cold_feet",       -- (verify) - v6.15.263
+    ancient_apparition_ice_blast        = "modifier_ice_blast",       -- (verify) - v6.15.263
     antimage_mana_void                  = nil,                                            -- v6.15.263: no Sniper modifier (instant burst); anim-path only
-    gyrocopter_homing_missile           = "modifier_gyrocopter_homing_missile",          -- (verify) , v6.15.263
-    gyrocopter_call_down                = "modifier_gyrocopter_call_down_slow",          -- (verify) , v6.15.263
-    kunkka_torrent                      = "modifier_kunkka_torrent_thinker",             -- (verify) , v6.15.263 (thinker entity for AOE warning)
-    kunkka_x_marks_the_spot             = "modifier_kunkka_x_marks_the_spot",            -- (verify) , v6.15.263
-    nevermore_requiem_of_souls          = "modifier_nevermore_requiem",                  -- (verify) , v6.15.263
+    gyrocopter_homing_missile           = "modifier_gyrocopter_homing_missile",          -- (verify) - v6.15.263
+    gyrocopter_call_down                = "modifier_gyrocopter_call_down_slow",          -- (verify) - v6.15.263
+    kunkka_torrent                      = "modifier_kunkka_torrent_thinker",             -- (verify) - v6.15.263 (thinker entity for AOE warning)
+    kunkka_x_marks_the_spot             = "modifier_kunkka_x_marks_the_spot",            -- (verify) - v6.15.263
+    nevermore_requiem_of_souls          = "modifier_nevermore_requiem",                  -- (verify) - v6.15.263
     terrorblade_sunder                  = nil,                                            -- v6.15.263: no Sniper modifier (instant HP swap); anim-path only
     -- v6.15.265 zero-coverage fill batch 3
-    doom_bringer_infernal_blade         = "modifier_doom_bringer_infernal_blade",        -- (verify) , v6.15.265
-    furion_sprout                       = "modifier_furion_sprout",                       -- (verify) , v6.15.265
-    visage_grave_chill                  = "modifier_visage_grave_chill",                  -- (verify) , v6.15.265
+    doom_bringer_infernal_blade         = "modifier_doom_bringer_infernal_blade",        -- (verify) - v6.15.265
+    furion_sprout                       = "modifier_furion_sprout",                       -- (verify) - v6.15.265
+    visage_grave_chill                  = "modifier_visage_grave_chill",                  -- (verify) - v6.15.265
     visage_soul_assumption              = nil,                                            -- v6.15.265: no Sniper modifier (instant burst); anim-path only
-    venomancer_venomous_gale            = "modifier_venomancer_venomous_gale",            -- (verify) , v6.15.265
+    venomancer_venomous_gale            = "modifier_venomancer_venomous_gale",            -- (verify) - v6.15.265
     luna_lucent_beam                    = nil,                                            -- v6.15.265: no Sniper modifier (instant mini-stun); anim-path only
-    spectre_spectral_dagger             = "modifier_spectre_spectral_dagger",             -- (verify) , v6.15.265
+    spectre_spectral_dagger             = "modifier_spectre_spectral_dagger",             -- (verify) - v6.15.265
     -- v6.15.266 zero-coverage fill batch 4
-    juggernaut_omni_slash               = "modifier_juggernaut_omni_slash",               -- (verify) , v6.15.266
+    juggernaut_omni_slash               = "modifier_juggernaut_omni_slash",               -- (verify) - v6.15.266
     juggernaut_swift_slash              = nil,                                            -- v6.15.266: no Sniper modifier (gap-close attacks); anim-path only
-    phantom_lancer_spirit_lance         = "modifier_phantom_lancer_spirit_lance",         -- (verify) , v6.15.266
-    meepo_earthbind                     = "modifier_meepo_earthbind",                     -- (verify) , v6.15.266
+    phantom_lancer_spirit_lance         = "modifier_phantom_lancer_spirit_lance",         -- (verify) - v6.15.266
+    meepo_earthbind                     = "modifier_meepo_earthbind",                     -- (verify) - v6.15.266
     meepo_poof                          = nil,                                            -- v6.15.266: no Sniper modifier (caster gap-close channel); anim-path only
-    monkey_king_wukongs_command         = "modifier_monkey_king_wukongs_command_aura",    -- (verify) , v6.15.266
-    slardar_slithereen_crush            = "modifier_slardar_slithereen_crush",            -- (verify) , v6.15.266
-    slardar_amplify_damage              = "modifier_slardar_amplify_damage",              -- (verify) , v6.15.266
-    bristleback_hairball                = "modifier_bristleback_hairball_slow",           -- (verify) , v6.15.266
+    monkey_king_wukongs_command         = "modifier_monkey_king_wukongs_command_aura",    -- (verify) - v6.15.266
+    slardar_slithereen_crush            = "modifier_slardar_slithereen_crush",            -- (verify) - v6.15.266
+    slardar_amplify_damage              = "modifier_slardar_amplify_damage",              -- (verify) - v6.15.266
+    bristleback_hairball                = "modifier_bristleback_hairball_slow",           -- (verify) - v6.15.266
     -- v6.15.267 zero-coverage fill batch 5
-    invoker_cold_snap                   = "modifier_invoker_cold_snap_freeze",            -- (verify) , v6.15.267
+    invoker_cold_snap                   = "modifier_invoker_cold_snap_freeze",            -- (verify) - v6.15.267
     invoker_sun_strike                  = nil,                                            -- v6.15.267: no Sniper modifier (delayed AoE burst); needs OnParticleCreate
     invoker_emp                         = nil,                                            -- v6.15.267: no Sniper modifier (delayed AoE mana burn); needs OnParticleCreate
-    riki_smoke_screen                   = "modifier_riki_smoke_screen",                   -- (verify) , v6.15.267
+    riki_smoke_screen                   = "modifier_riki_smoke_screen",                   -- (verify) - v6.15.267
     riki_blink_strike                   = nil,                                            -- v6.15.267: no Sniper modifier (gap-close); anim path
-    lone_druid_spirit_bear_entangle     = "modifier_lone_druid_entangle_effect",          -- (verify) , v6.15.267 (bear passive root proc)
+    lone_druid_spirit_bear_entangle     = "modifier_lone_druid_entangle_effect",          -- (verify) - v6.15.267 (bear passive root proc)
     lone_druid_savage_roar              = nil,                                            -- v6.15.267: no Sniper modifier (NO_TARGET fear AoE); anim path
-    undying_decay                       = "modifier_undying_decay",                       -- (verify) , v6.15.267
-    dazzle_poison_touch                 = "modifier_dazzle_poison_touch",                 -- (verify) , v6.15.267
-    weaver_the_swarm                    = "modifier_weaver_the_swarm",                    -- (verify) , v6.15.267
+    undying_decay                       = "modifier_undying_decay",                       -- (verify) - v6.15.267
+    dazzle_poison_touch                 = "modifier_dazzle_poison_touch",                 -- (verify) - v6.15.267
+    weaver_the_swarm                    = "modifier_weaver_the_swarm",                    -- (verify) - v6.15.267
     centaur_double_edge                 = nil,                                            -- v6.15.267: no Sniper modifier (instant burst); anim path
     phoenix_launch_fire_spirit          = nil,                                            -- v6.15.267: no Sniper modifier (line projectile); anim path (ACT_INVALID -- may not fire)
     -- v6.15.268 zero-coverage fill batch 6
-    alchemist_unstable_concoction_throw = "modifier_alchemist_unstable_concoction",      -- (verify) , v6.15.268
-    broodmother_sticky_snare            = "modifier_broodmother_sticky_snare",            -- (verify) , v6.15.268
-    medusa_gorgon_grasp                 = "modifier_medusa_gorgon_grasp",                 -- (verify) , v6.15.268
-    medusa_mystic_snake                 = "modifier_medusa_mystic_snake",                 -- (verify) , v6.15.268
-    troll_warlord_whirling_axes_ranged  = "modifier_troll_warlord_whirling_axes_ranged",  -- (verify) , v6.15.268
-    dark_seer_vacuum                    = "modifier_dark_seer_vacuum",                    -- (verify) , v6.15.268
-    dark_seer_ion_shell                 = "modifier_dark_seer_ion_shell",                 -- (verify) , v6.15.268
-    ember_spirit_sleight_of_fist        = "modifier_ember_spirit_sleight_of_fist_caster", -- (verify) , v6.15.268 (caster-side phase marker)
+    alchemist_unstable_concoction_throw = "modifier_alchemist_unstable_concoction",      -- (verify) - v6.15.268
+    broodmother_sticky_snare            = "modifier_broodmother_sticky_snare",            -- (verify) - v6.15.268
+    medusa_gorgon_grasp                 = "modifier_medusa_gorgon_grasp",                 -- (verify) - v6.15.268
+    medusa_mystic_snake                 = "modifier_medusa_mystic_snake",                 -- (verify) - v6.15.268
+    troll_warlord_whirling_axes_ranged  = "modifier_troll_warlord_whirling_axes_ranged",  -- (verify) - v6.15.268
+    dark_seer_vacuum                    = "modifier_dark_seer_vacuum",                    -- (verify) - v6.15.268
+    dark_seer_ion_shell                 = "modifier_dark_seer_ion_shell",                 -- (verify) - v6.15.268
+    ember_spirit_sleight_of_fist        = "modifier_ember_spirit_sleight_of_fist_caster", -- (verify) - v6.15.268 (caster-side phase marker)
     -- v6.15.269 zero-coverage fill batch 7
-    bounty_hunter_shuriken_toss         = "modifier_bounty_hunter_shuriken_toss",        -- (verify) , v6.15.269
-    brewmaster_cinder_brew              = "modifier_brewmaster_cinder_brew",              -- (verify) , v6.15.269
-    phoenix_sun_ray                     = "modifier_phoenix_sun_ray",                     -- (verify) , v6.15.269
-    shredder_chakram                    = "modifier_shredder_chakram",                    -- (verify) , v6.15.269
-    arc_warden_flux                     = "modifier_arc_warden_flux",                     -- (verify) , v6.15.269
+    bounty_hunter_shuriken_toss         = "modifier_bounty_hunter_shuriken_toss",        -- (verify) - v6.15.269
+    brewmaster_cinder_brew              = "modifier_brewmaster_cinder_brew",              -- (verify) - v6.15.269
+    phoenix_sun_ray                     = "modifier_phoenix_sun_ray",                     -- (verify) - v6.15.269
+    shredder_chakram                    = "modifier_shredder_chakram",                    -- (verify) - v6.15.269
+    arc_warden_flux                     = "modifier_arc_warden_flux",                     -- (verify) - v6.15.269
     -- v6.15.270 final mop-up
     abaddon_aphotic_shield              = nil,                                            -- v6.15.270: cast on ALLY; explosion AOE damage is the threat but no Sniper modifier
     -- v0.5.14 E9 (BL-B5): duplicate centaur_double_edge = nil removed (live entry preserved earlier in file at v6.15.267 block; this v6.15.270 duplicate was an editing trap)
-    chen_penitence                      = "modifier_chen_penitence",                      -- (verify) , v6.15.270
+    chen_penitence                      = "modifier_chen_penitence",                      -- (verify) - v6.15.270
     enchantress_impetus                 = nil,                                            -- v6.15.270: autocast passive proc damage; no specific modifier (raw projectile damage)
-    omniknight_hammer_of_purity         = "modifier_omniknight_hammer_of_purity",         -- (verify) , v6.15.270
-    largo_catchy_lick                   = "modifier_largo_catchy_lick",                   -- (verify) , v6.15.270
+    omniknight_hammer_of_purity         = "modifier_omniknight_hammer_of_purity",         -- (verify) - v6.15.270
+    largo_catchy_lick                   = "modifier_largo_catchy_lick",                   -- (verify) - v6.15.270
     -- v0.5.14 E9 (BL-B5): duplicate largo_frogstomp / largo_croak_of_genius nil placeholders removed; the live string-valued entries in the v6.15.272 second-match harvest block below are authoritative
     -- v6.15.271 ranked-match harvest
     tusk_walrus_punch                   = "modifier_tusk_walrus_punch_air_time",          -- harvested 2026-05-24
@@ -920,28 +920,28 @@ ThreatData.ABILITY_TO_THREAT = {
     snapfire_lil_shredder               = "modifier_snapfire_lil_shredder_debuff",        -- harvested 2026-05-25
     snapfire_magma_burn                 = "modifier_snapfire_magma_burn_slow",            -- harvested 2026-05-25 (verify ability name)
     witch_doctor_maledict               = "modifier_maledict",                            -- harvested 2026-05-25
-    -- v6.15.198 harvest , anim-route mappings for the threats harvested
+    -- v6.15.198 harvest - anim-route mappings for the threats harvested
     -- into THREATS_ON_SELF this version. Where one ability lands MULTIPLE
     -- modifiers on the victim (PA Stifling Dagger, Viper Nethertoxin
     -- variants, SK Reincarnation variants), we route the ability to the
-    -- PRIMARY threat-modifier , the actively-debuffing one , since the
+    -- PRIMARY threat-modifier - the actively-debuffing one - since the
     -- score-bonus / save-chain dispatcher reads from one name. The
     -- secondary modifier names are still in THREATS_ON_SELF so the
     -- threat_unrecognized harvest loop doesn't re-flag them.
     phantom_assassin_stifling_dagger    = "modifier_phantom_assassin_stiflingdagger",      -- harvested
     drow_ranger_frost_arrows            = "modifier_drow_ranger_frost_arrows_slow",         -- harvested (passive on-attack)
-    oracle_fortunes_end                 = "modifier_oracle_fortunes_end_channel_target",    -- harvested , channel marker is primary
+    oracle_fortunes_end                 = "modifier_oracle_fortunes_end_channel_target",    -- harvested - channel marker is primary
     oracle_purifying_flames             = "modifier_oracle_purifying_flames",               -- harvested
-    skeleton_king_reincarnation         = "modifier_skeleton_king_reincarnate_slow",        -- harvested , slow aura is the on-Sniper effect
+    skeleton_king_reincarnation         = "modifier_skeleton_king_reincarnate_slow",        -- harvested - slow aura is the on-Sniper effect
     viper_corrosive_skin                = "modifier_viper_corrosive_skin_slow",              -- harvested (passive on-attack)
-    viper_nethertoxin                   = "modifier_viper_nethertoxin_mute",                 -- harvested , silence variant is the R-blocker
+    viper_nethertoxin                   = "modifier_viper_nethertoxin_mute",                 -- harvested - silence variant is the R-blocker
     viper_poison_attack                 = "modifier_viper_poison_attack_slow",               -- harvested (passive on-attack)
     necrolyte_heartstopper_aura         = "modifier_necrolyte_heartstopper_aura_effect",     -- harvested (passive aura)
     vengefulspirit_retribution          = "modifier_vengefulspirit_retribution_tracker",     -- harvested (shard tracker)
 }
 
 ----------------------------------------------------------------------------
--- RECOMMENDED_SAVES , best-to-worst save priority per threat
+-- RECOMMENDED_SAVES - best-to-worst save priority per threat
 --
 -- The default chain order (Eul → Lotus → Manta → Satanic → Glimmer → Pike →
 -- Force → Grenade-self → BKB → Aeon) is generic. For specific threats,
@@ -982,7 +982,7 @@ ThreatData.RECOMMENDED_SAVES = {
     },
     modifier_lion_finger_of_death = {
         -- magic_barrier (Pipe of Insight) absorbs a lot of the burst.
-        -- v6.7: Eternal Shroud removed in 7.41 , was previously listed here.
+        -- v6.7: Eternal Shroud removed in 7.41 - was previously listed here.
         "item_lotus_orb", "item_black_king_bar", "item_cyclone", "item_wind_waker",
         "item_aeon_disk", "item_pipe_of_insight",
     },
@@ -1009,7 +1009,7 @@ ThreatData.RECOMMENDED_SAVES = {
         "item_cyclone", "item_wind_waker", "item_manta", "item_disperser",
     },
     modifier_bane_fiends_grip = {
-        -- 875u tether (HEURISTIC , Liquipedia doesn't document explicit leash);
+        -- 875u tether (HEURISTIC - Liquipedia doesn't document explicit leash);
         -- Pike push 425u only breaks when Bane is >450u away.
         -- Blink ALWAYS works. Eul/Manta are most reliable dispels.
         -- BKB does NOT work (pierces).
@@ -1032,7 +1032,7 @@ ThreatData.RECOMMENDED_SAVES = {
     },
     -- Homing charges: displacement USELESS on self (re-targets). Need
     -- invuln/immune at impact. grenade_at_caster knocks the charger and
-    -- cancels the modifier , that's the cheap option for Sniper.
+    -- cancels the modifier - that's the cheap option for Sniper.
     modifier_spirit_breaker_charge_of_darkness = {
         "item_black_king_bar", "item_cyclone", "item_wind_waker", "item_lotus_orb",
         "item_manta", "item_aeon_disk", "item_ghost",
@@ -1074,7 +1074,7 @@ ThreatData.RECOMMENDED_SAVES = {
         "item_hurricane_pike", "item_force_staff", "item_blink",
         "item_cyclone", "item_wind_waker",
     },
-    -- v6.14.1 M9: Tusk Ice Shards , slow-moving line projectile, perp
+    -- v6.14.1 M9: Tusk Ice Shards - slow-moving line projectile, perp
     -- displacement / blink avoids. Mirrors hook ordering.
     modifier_tusk_ice_shards_thinker = {
         -- v6.15.261: hero-agnostic.
@@ -1114,16 +1114,16 @@ ThreatData.RECOMMENDED_SAVES = {
         "item_cyclone", "item_wind_waker", "item_manta",
         "item_hurricane_pike", "item_force_staff", "item_blink",
     },
-    -- Lockdown , Satanic for lifesteal-tank, Blade Mail returns Duel damage
+    -- Lockdown - Satanic for lifesteal-tank, Blade Mail returns Duel damage
     modifier_legion_commander_duel = {
         "item_satanic", "item_blade_mail", "item_cyclone", "item_wind_waker",
         "item_manta",
     },
     -- Misc
     -- v6.15.203 (audit D5): the comment claim "BKB ignores taunt" is
-    -- WRONG , Berserker's Call PIERCES spell immunity (Liquipedia). Blade
+    -- WRONG - Berserker's Call PIERCES spell immunity (Liquipedia). Blade
     -- Mail returns the post-armor attack damage Sniper deals to Axe at
-    -- FULL strength against Sniper's own armor , net loss. Entry kept
+    -- FULL strength against Sniper's own armor - net loss. Entry kept
     -- for documentation but never consumed: THREATS_ON_SELF tags
     -- save="informational" and the v6.15.202 D1 dispatcher catch-all
     -- correctly no-ops on that.
@@ -1210,7 +1210,7 @@ ThreatData.RECOMMENDED_SAVES = {
 }
 
 ----------------------------------------------------------------------------
--- CATEGORY_CHAINS , per-category fallback save chains
+-- CATEGORY_CHAINS - per-category fallback save chains
 ----------------------------------------------------------------------------
 
 ---Default save chain per THREAT_CATEGORY. Used by the resolver when a threat
@@ -1219,7 +1219,7 @@ ThreatData.RECOMMENDED_SAVES = {
 ---get the canonical response for their behavioral class without per-modifier
 ---tuning.
 ---
----v6.15.259: extracted from Sniper/the brain source so other hero brains can
+---v6.15.259: extracted from Sniper/Sniper.lua so other hero brains can
 ---consume the same category-keyed defaults.
 ---v6.15.260: HERO-AGNOSTIC -- no per-hero save names appear in any chain.
 ---Hero brains insert their own abilities via per-hero category-patch tables
@@ -1312,23 +1312,788 @@ function ThreatData.CategoryChain(category)
     return ThreatData.CATEGORY_CHAINS[category]
 end
 
+---v0.5.48 Phase 2: per-threat arrival-timing catalog. Data-only entries
+---giving the inputs needed to compute "when does this threat actually
+---hit the target" precisely. Hero-side code combines an entry with the
+---live caster/target positions + (optionally) KV reads to derive
+---impact_t and impact_pos. Used by Lina W .fire for precise pre-fire
+---timing (W has 1.12s prep so it needs accurate impact_t to land at
+---arrival). Future Sniper opt-in via the same catalog.
+---
+---Entry fields:
+---  - kind            : descriptive tag (homing_charge / homing_carry /
+---                      instant_blink / channel_at_caster /
+---                      cast_point_targeted). Informational; not consumed
+---                      by the compute helper.
+---  - speed_source    : how to derive travel speed.
+---      'live_or_fallback' = max(NPC.GetMoveSpeed(caster), speed_fallback)
+---      'kv_or_fallback'   = read KV (kv_ability + kv_speed_key) else
+---                           speed_fallback
+---      'instant'          = no travel time (cast point + post-cast delay
+---                           only)
+---  - speed_fallback  : numeric u/s used when live/KV unavailable.
+---  - kv_ability      : KV ability name (e.g. 'tusk_snowball') for KV
+---                      lookups. Modifier.GetAbility(mod_handle) provides
+---                      the live ability handle.
+---  - kv_speed_key    : KV special value key for travel speed.
+---  - cast_point      : seconds before the threat physically lands after
+---                      the modifier-create event. For blinks / charges
+---                      this is 0 (modifier IS the impact arming). For
+---                      cast-point-armed threats (Lion Finger, Sniper
+---                      Assassinate) this is the cast point duration.
+---  - post_cast_delay : seconds AFTER cast point during which the threat
+---                      lands. Most threats are 0; some have a baked-in
+---                      delay between cast finish and impact.
+---  - impact_pos      : 'self' (defender's current position) or 'caster'
+---                      (threat caster's current position). Determines
+---                      where defensive AoE saves should be aimed.
+---
+---Compute helper (hero-side):
+---```lua
+---local impact_t, impact_pos = state.compute_arrival_time(
+---    threat_mod, caster, self_npc, modifier_handle)
+---if impact_t and impact_t <= W_PREP + slack then fire_W_now() end
+---```
+ThreatData.THREAT_ARRIVAL_TIMING = {
+
+    -- Bara Charge of Darkness: homing close-gap. Bara's MS during charge
+    -- reflects the modifier's MS boost; NPC.GetMoveSpeed returns the live
+    -- modified value (typically 500-700 with phase boots + level + talents,
+    -- up to ~1100 max). speed_fallback=1000 for the case where the live
+    -- read fails. impact_pos=self because Bara STOPS at the target on hit.
+    -- v0.5.50: ramp model from Liquipedia (replaces v0.5.49.x flat
+    -- acceleration_buffer). Bara Charge of Darkness:
+    --   Min MS bonus: 68.75 / 81.25 / 93.75 / 106.25 per skill level
+    --   Max MS bonus: 275 / 325 / 375 / 425 per skill level
+    --   Wind-up: 1.5s linear ramp from min to max
+    --   Status: flat MS bonus (ramping) + removed MS cap + no unit collision
+    --
+    -- NPC.GetMoveSpeed at fire moment reflects the CURRENT ramped speed
+    -- (base_MS + min_bonus + ramp_fraction * (max_bonus - min_bonus)).
+    -- Catalog impact_t = d / live_speed underestimates Bara's progress
+    -- because Bara CONTINUES to ramp during W's 1.12s prep window.
+    --
+    -- Ramp acceleration per level (max - min) / wind_up:
+    --   lvl 1: (275 - 68.75) / 1.5  = 137 u/s^2
+    --   lvl 2: (325 - 81.25) / 1.5  = 163 u/s^2
+    --   lvl 3: (375 - 93.75) / 1.5  = 188 u/s^2
+    --   lvl 4: (425 - 106.25) / 1.5 = 213 u/s^2  (catalog default)
+    --
+    -- compute_arrival_time computes:
+    --   predicted_end_speed = min(peak_speed_cap, live + ramp_accel * W_LEAD)
+    --   avg_during_prep     = (live + predicted_end_speed) / 2
+    -- Handles BOTH early-charge (still ramping) and late-charge (already
+    -- at peak; peak_speed_cap clamps the over-extrapolation) cases.
+    --
+    -- peak_speed_cap = 800 covers Bara at lvl 4 (715 base+max) + Phase
+    -- Boots (+50) + level 15 charge talent (+60 bonus = max 485 instead
+    -- of 425, peak ~775). Caps higher edge cases without overshooting.
+    -- Per-level KV reads (lvl-aware accel + cap) queued for v0.5.50.1
+    -- once modifier_handle threading from armed_threats lands.
+    modifier_spirit_breaker_charge_of_darkness = {
+        kind                 = "homing_charge",
+        speed_source         = "live_with_ramp",
+        speed_fallback       = 700,   -- if NPC.GetMoveSpeed fails
+        ramp_accel           = 213,   -- u/s^2 (lvl 4 default)
+        peak_speed_cap       = 800,   -- absolute speed ceiling for the ramp
+        cast_point           = 0,
+        post_cast_delay      = 0,
+        impact_pos           = "self",
+    },
+
+    -- Tusk Snowball: homing carry. The snowball is a separate entity that
+    -- travels at a fixed KV speed; Tusk's hero MS (NPC.GetMoveSpeed = ~310
+    -- during snowball) does NOT reflect the snowball's travel speed.
+    -- Canonical KV: tusk_snowball.snowball_movement_speed = 1675 (per
+    -- liquipedia + KV). speed_fallback=1675 used if KV unavailable.
+    -- impact_pos=self because the snowball PICKS UP the target at the
+    -- target's position (does not deposit them past).
+    modifier_tusk_snowball_movement = {
+        kind            = "homing_carry",
+        speed_source    = "kv_or_fallback",
+        kv_ability      = "tusk_snowball",
+        kv_speed_key    = "snowball_movement_speed",
+        speed_fallback  = 1675,
+        cast_point      = 0,
+        post_cast_delay = 0,
+        impact_pos      = "self",
+    },
+
+    -- PA Phantom Strike: instant blink to target. The cast point ~0.25s
+    -- is the animation lock before the blink resolves; the impact (PA at
+    -- target) is effectively at modifier-create. impact_pos=self because
+    -- PA blinks ONTO the target and stays at melee.
+    modifier_phantom_assassin_phantom_strike_target = {
+        kind            = "instant_blink",
+        speed_source    = "instant",
+        speed_fallback  = 0,
+        cast_point      = 0,  -- modifier appears post-blink; treat as instant
+        post_cast_delay = 0,
+        impact_pos      = "self",
+    },
+
+    -- WD Death Ward: channel at caster. 8s channel; the ward auto-attacks
+    -- the target with magical damage but WD himself is stationary at his
+    -- summoning position. Interrupting WD (stun) ends the channel. impact
+    -- _pos=caster so the defensive W AoE is aimed at WD to stun him mid-
+    -- channel. cast_point=0.5s (WD's Death Ward summon cast point).
+    modifier_witch_doctor_death_ward = {
+        kind            = "channel_at_caster",
+        speed_source    = "instant",
+        speed_fallback  = 0,
+        cast_point      = 0.5,
+        post_cast_delay = 0,
+        impact_pos      = "caster",
+    },
+
+    -- Lion Finger of Death: cast-point-targeted single-target nuke. Cast
+    -- point 0.6s (per KV / liquipedia). impact_pos=self because the
+    -- damage resolves on the target.
+    modifier_lion_finger_of_death = {
+        kind            = "cast_point_targeted",
+        speed_source    = "instant",
+        speed_fallback  = 0,
+        kv_ability      = "lion_finger_of_death",
+        kv_cast_point_key = "AbilityCastPoint",
+        cast_point      = 0.6,
+        post_cast_delay = 0,
+        impact_pos      = "self",
+    },
+
+    -- Sniper Assassinate: cast-point-targeted ult. Cast point 2.0s (per
+    -- v0.5.39 BUG-3 catalog). The 2.0s is interruptible via stun on
+    -- Sniper. impact_pos=self for the damage application; defensive
+    -- saves that interrupt the cast should target Sniper instead (handled
+    -- separately by the existing Lotus / BKB / Aeon chain front).
+    modifier_sniper_assassinate = {
+        kind            = "cast_point_targeted",
+        speed_source    = "instant",
+        speed_fallback  = 0,
+        kv_ability      = "sniper_assassinate",
+        kv_cast_point_key = "AbilityCastPoint",
+        cast_point      = 2.0,
+        post_cast_delay = 0,
+        impact_pos      = "self",
+    },
+
+    -- Lina Laguna Blade: cast-point-targeted ult mirror to Sniper Assassinate.
+    -- Cast point 0.45s (per liquipedia / KV). For Lina defending against
+    -- ENEMY Lina mirror matchups. impact_pos=self.
+    modifier_lina_laguna_blade = {
+        kind            = "cast_point_targeted",
+        speed_source    = "instant",
+        speed_fallback  = 0,
+        kv_ability      = "lina_laguna_blade",
+        kv_cast_point_key = "AbilityCastPoint",
+        cast_point      = 0.45,
+        post_cast_delay = 0,
+        impact_pos      = "self",
+    },
+
+    -- v0.5.66 Phase 4 slice 1: catalog the 6 CAST_POINT_THREATS modifiers
+    -- previously absent from THREAT_ARRIVAL_TIMING. All cast_point_targeted
+    -- shape; cast_point values mirror the CAST_POINT_THREATS.cp_default
+    -- already in this file (and re-validated against liquipedia where the
+    -- comment notes a check date). The v0.5.56 sync block below will dedupe
+    -- cp_default from these new entries automatically.
+
+    -- Doom: cast-point-targeted single-target silence + dot. Cast point
+    -- 0.5s (KV AbilityCastPoint, liquipedia). 16s undispellable silence
+    -- on the target; Lotus / BKB / Lina W stun must fire BEFORE doom lands.
+    -- impact_pos=self.
+    modifier_doom_bringer_doom = {
+        kind            = "cast_point_targeted",
+        speed_source    = "instant",
+        speed_fallback  = 0,
+        kv_ability      = "doom_bringer_doom",
+        kv_cast_point_key = "AbilityCastPoint",
+        cast_point      = 0.5,
+        post_cast_delay = 0,
+        impact_pos      = "self",
+    },
+
+    -- AA Ice Blast: cast-point-targeted, GLOBAL frost mark + execute.
+    -- Cast point 0.5s. The mark itself lands at cast_point + projectile
+    -- travel from AA to target, but at global cast range projectile time
+    -- dominates -- treat as cast_point for the brain's pre-impact window
+    -- since the projectile is on its own dispatch (modifier_ice_blast
+    -- applies on hit). Lotus reflect / BKB pre-fire on the projectile.
+    -- impact_pos=self.
+    modifier_ice_blast = {
+        kind            = "cast_point_targeted",
+        speed_source    = "instant",
+        speed_fallback  = 0,
+        kv_ability      = "ancient_apparition_ice_blast",
+        kv_cast_point_key = "AbilityCastPoint",
+        cast_point      = 0.5,
+        post_cast_delay = 0,
+        impact_pos      = "self",
+    },
+
+    -- OD Sanity Eclipse: cast-point-targeted, AoE around target, mana-based
+    -- magic damage. Cast point 1.7s. impact_pos=self (Lina is the catch
+    -- point for the AoE; BKB / Lotus protect self).
+    modifier_obsidian_destroyer_sanity_eclipse = {
+        kind            = "cast_point_targeted",
+        speed_source    = "instant",
+        speed_fallback  = 0,
+        kv_ability      = "obsidian_destroyer_sanity_eclipse",
+        kv_cast_point_key = "AbilityCastPoint",
+        cast_point      = 1.7,
+        post_cast_delay = 0,
+        impact_pos      = "self",
+    },
+
+    -- Tinker Laser: cast-point-targeted, single-target stun + nuke + miss
+    -- chance debuff. Cast point 0.45s. Range 700 base (cast range bonuses
+    -- apply). impact_pos=self.
+    modifier_tinker_laser = {
+        kind            = "cast_point_targeted",
+        speed_source    = "instant",
+        speed_fallback  = 0,
+        kv_ability      = "tinker_laser",
+        kv_cast_point_key = "AbilityCastPoint",
+        cast_point      = 0.45,
+        post_cast_delay = 0,
+        impact_pos      = "self",
+    },
+
+    -- Zeus Thundergod's Wrath: global ult, hits every visible enemy hero.
+    -- Cast point 0.6s. impact_pos=self (the damage application point is
+    -- the target; defensive Lotus / BKB protect self). Side mark removes
+    -- invisibility for 4s on each target.
+    modifier_zuus_thundergods_wrath = {
+        kind            = "cast_point_targeted",
+        speed_source    = "instant",
+        speed_fallback  = 0,
+        kv_ability      = "zuus_thundergods_wrath",
+        kv_cast_point_key = "AbilityCastPoint",
+        cast_point      = 0.6,
+        post_cast_delay = 0,
+        impact_pos      = "self",
+    },
+
+    -- Sand King Epicenter: channeled AoE expanding from SK's cast position
+    -- over 2.0s (KV AbilityCastPoint, KV epicenter_radius growing per
+    -- pulse). impact_pos=caster -- the AoE expands FROM Sand King's
+    -- standing position, so defensive aim (e.g. Lina W stun on SK to
+    -- cancel the channel) targets SK. Lotus reflect / self-BKB fire on
+    -- self though; aim is a save-specific concern, this field is the
+    -- "where does the threat originate" hint.
+    modifier_sand_king_epicenter = {
+        kind            = "cast_point_targeted",
+        speed_source    = "instant",
+        speed_fallback  = 0,
+        kv_ability      = "sandking_epicenter",
+        kv_cast_point_key = "AbilityCastPoint",
+        cast_point      = 2.0,
+        post_cast_delay = 0,
+        impact_pos      = "caster",
+    },
+
+    -- v0.5.67 Phase 4 slice 2: channel modifiers + fast cast-point
+    -- targeted disables. Cast point values from common Dota knowledge;
+    -- consumers are not yet wired (no per-mod pre-fire timing on save
+    -- items), so precise values can be tuned when consumers come online.
+    -- Channel modifiers use the CASTER-side modifier name (matching WD
+    -- Death Ward pattern); the channel itself is what compute_arrival_time
+    -- is asked about. impact_pos=caster so defensive interrupts (stun the
+    -- channeler) aim at the caster.
+
+    -- Bane Fiend's Grip: single-target channel, locks both Bane and Lina.
+    -- Cast point 0.3s. 5.0/5.0/5.0s channel (longer with talent / scepter).
+    -- Stunning Bane breaks the channel; Lotus reflects the projectile but
+    -- not the channel itself; BKB on Lina blocks the magic damage but not
+    -- the disable. impact_pos=caster (aim interrupt at Bane).
+    modifier_bane_fiends_grip = {
+        kind            = "channel_at_caster",
+        speed_source    = "instant",
+        speed_fallback  = 0,
+        kv_ability      = "bane_fiends_grip",
+        kv_cast_point_key = "AbilityCastPoint",
+        cast_point      = 0.3,
+        post_cast_delay = 0,
+        impact_pos      = "caster",
+    },
+
+    -- Pugna Life Drain: single-target channel, dispellable. Cast point
+    -- 0.3s. Stun on Pugna ends the channel. impact_pos=caster.
+    modifier_pugna_life_drain = {
+        kind            = "channel_at_caster",
+        speed_source    = "instant",
+        speed_fallback  = 0,
+        kv_ability      = "pugna_life_drain",
+        kv_cast_point_key = "AbilityCastPoint",
+        cast_point      = 0.3,
+        post_cast_delay = 0,
+        impact_pos      = "caster",
+    },
+
+    -- Pudge Dismember: single-target channel, lifts the target. Cast point
+    -- 0.3s. Stun on Pudge ends the channel. impact_pos=caster.
+    modifier_pudge_dismember = {
+        kind            = "channel_at_caster",
+        speed_source    = "instant",
+        speed_fallback  = 0,
+        kv_ability      = "pudge_dismember",
+        kv_cast_point_key = "AbilityCastPoint",
+        cast_point      = 0.3,
+        post_cast_delay = 0,
+        impact_pos      = "caster",
+    },
+
+    -- Crystal Maiden Freezing Field: PBAoE channel around CM. Cast point
+    -- 0.3s. Stun on CM ends the channel. impact_pos=caster.
+    modifier_crystal_maiden_freezing_field = {
+        kind            = "channel_at_caster",
+        speed_source    = "instant",
+        speed_fallback  = 0,
+        kv_ability      = "crystal_maiden_freezing_field",
+        kv_cast_point_key = "AbilityCastPoint",
+        cast_point      = 0.3,
+        post_cast_delay = 0,
+        impact_pos      = "caster",
+    },
+
+    -- Enigma Black Hole: PBAoE channel around Enigma, single-disable
+    -- multi-target. Cast point 0.45s. Stun on Enigma ends the channel.
+    -- impact_pos=caster.
+    modifier_enigma_black_hole = {
+        kind            = "channel_at_caster",
+        speed_source    = "instant",
+        speed_fallback  = 0,
+        kv_ability      = "enigma_black_hole",
+        kv_cast_point_key = "AbilityCastPoint",
+        cast_point      = 0.45,
+        post_cast_delay = 0,
+        impact_pos      = "caster",
+    },
+
+    -- Disruptor Static Storm: AoE silence + damage from a thinker entity
+    -- at the cast position. Disruptor himself does NOT channel post-cast;
+    -- the thinker handles the AoE for 6.0s. Cast point 0.3s. The catalog
+    -- key uses the THINKER modifier name (matching ENEMY_CHANNEL_MODIFIERS
+    -- which lists modifier_disruptor_static_storm_thinker). Stun on
+    -- Disruptor during cast point cancels; once thinker is placed it's
+    -- uninterruptible. impact_pos=caster (the thinker position = where
+    -- Disruptor was at cast time).
+    modifier_disruptor_static_storm_thinker = {
+        kind            = "channel_at_caster",
+        speed_source    = "instant",
+        speed_fallback  = 0,
+        kv_ability      = "disruptor_static_storm",
+        kv_cast_point_key = "AbilityCastPoint",
+        cast_point      = 0.3,
+        post_cast_delay = 0,
+        impact_pos      = "caster",
+    },
+
+    -- Lion Voodoo (Hex): cast-point-targeted single-target transform.
+    -- Cast point 0.3s (low because Lion's other ults are 0.6s; Hex is
+    -- snappy). 2.0/2.75/3.5s sheep. impact_pos=self (Lina is the target).
+    modifier_lion_voodoo = {
+        kind            = "cast_point_targeted",
+        speed_source    = "instant",
+        speed_fallback  = 0,
+        kv_ability      = "lion_voodoo",
+        kv_cast_point_key = "AbilityCastPoint",
+        cast_point      = 0.3,
+        post_cast_delay = 0,
+        impact_pos      = "self",
+    },
+
+    -- Bane Nightmare: cast-point-targeted single-target sleep. Cast point
+    -- 0.3s. Wakes up on damage. impact_pos=self.
+    modifier_bane_nightmare = {
+        kind            = "cast_point_targeted",
+        speed_source    = "instant",
+        speed_fallback  = 0,
+        kv_ability      = "bane_nightmare",
+        kv_cast_point_key = "AbilityCastPoint",
+        cast_point      = 0.3,
+        post_cast_delay = 0,
+        impact_pos      = "self",
+    },
+
+    -- Faceless Void Chronosphere: AoE-at-ground stop-time. Cast point
+    -- 0.4s. 4-5s freeze for everyone inside except FV (and his allies
+    -- with Aghs). Defensive interrupts (stun FV during cast point) cancel
+    -- the sphere. impact_pos=caster -- the sphere is centered on FV's
+    -- cast position (he's typically at the center inside). Kind is
+    -- cast_point_targeted as approximation; a future cast_point_aoe kind
+    -- could distinguish (Sand King Epicenter is the other AoE-at-caster
+    -- entry that doesn't perfectly fit this kind).
+    modifier_faceless_void_chronosphere = {
+        kind            = "cast_point_targeted",
+        speed_source    = "instant",
+        speed_fallback  = 0,
+        kv_ability      = "faceless_void_chronosphere",
+        kv_cast_point_key = "AbilityCastPoint",
+        cast_point      = 0.4,
+        post_cast_delay = 0,
+        impact_pos      = "caster",
+    },
+
+    -- v0.5.68 Phase 4 slice 3: homing projectiles + AoE-at-ground. 10 new
+    -- entries covering common stuns / nukes / displacements that Lina's
+    -- save chains care about. Cast point values from common Dota
+    -- knowledge; modifier names follow canonical patterns but may need
+    -- VPK-grep verification (see reference_dota_modifier_names_vpk_grep
+    -- memory) when a consumer comes online. Projectiles are modeled as
+    -- cast_point_targeted with cast_point covering the caster's cast
+    -- point only; projectile travel is on its own dispatch (the modifier
+    -- applies on hit). AoE-at-ground / AoE-at-caster keep the
+    -- cast_point_targeted + impact_pos=caster workaround until a
+    -- dedicated cast_point_aoe kind is added.
+
+    -- Earthshaker Fissure: line stun emanating from ES. Cast point 0.46s.
+    -- impact_pos=self (the line stun applies to targets along the line;
+    -- Lina catches it if she's in it).
+    modifier_earthshaker_fissure_stun = {
+        kind            = "cast_point_targeted",
+        speed_source    = "instant",
+        speed_fallback  = 0,
+        kv_ability      = "earthshaker_fissure",
+        kv_cast_point_key = "AbilityCastPoint",
+        cast_point      = 0.46,
+        post_cast_delay = 0,
+        impact_pos      = "self",
+    },
+
+    -- Earthshaker Echo Slam: PBAoE stun + damage around ES, with
+    -- secondary echo damage per hero hit. Cast point 0.5s. impact_pos=
+    -- caster (centered on ES). Lotus reflect / pre-fire BKB protect self.
+    modifier_earthshaker_echo_slam = {
+        kind            = "cast_point_targeted",
+        speed_source    = "instant",
+        speed_fallback  = 0,
+        kv_ability      = "earthshaker_echo_slam",
+        kv_cast_point_key = "AbilityCastPoint",
+        cast_point      = 0.5,
+        post_cast_delay = 0,
+        impact_pos      = "caster",
+    },
+
+    -- Earthshaker Earth Splitter: long-line AoE with delayed damage. Cast
+    -- point 0.5s, then a ~3s post-cast delay before the line damage
+    -- resolves. Aghs increases the damage tracking. impact_pos=caster
+    -- (line emanates from ES). Brain has plenty of time to react during
+    -- the post-cast delay; this is a rare case where post_cast_delay
+    -- actually matters for save timing.
+    modifier_earthshaker_earthsplitter = {
+        kind            = "cast_point_targeted",
+        speed_source    = "instant",
+        speed_fallback  = 0,
+        kv_ability      = "earthshaker_earth_splitter",
+        kv_cast_point_key = "AbilityCastPoint",
+        cast_point      = 0.5,
+        post_cast_delay = 3.0,
+        impact_pos      = "caster",
+    },
+
+    -- Magnus Skewer: line displacement; Magnus charges through targets
+    -- pulling them with him. Cast point 0.3s. impact_pos=self (Lina is
+    -- displaced if hit). Brain's pre-cast window saves are BKB / Lotus
+    -- (Lotus reflect on the dispel? actually Skewer isn't dispellable so
+    -- Lotus does nothing). Self-WW or Eul can dodge during cast point.
+    modifier_magnataur_skewer = {
+        kind            = "cast_point_targeted",
+        speed_source    = "instant",
+        speed_fallback  = 0,
+        kv_ability      = "magnataur_skewer",
+        kv_cast_point_key = "AbilityCastPoint",
+        cast_point      = 0.3,
+        post_cast_delay = 0,
+        impact_pos      = "self",
+    },
+
+    -- Magnus Reverse Polarity: PBAoE pull + 4s stun. Cast point 0.55s.
+    -- impact_pos=caster (pulls all hit targets to Magnus). Pre-cast saves
+    -- must fire during the 0.55s window: BKB blocks the stun; Lotus
+    -- doesn't reflect; WW / Eul dodge.
+    modifier_magnataur_reverse_polarity_stun = {
+        kind            = "cast_point_targeted",
+        speed_source    = "instant",
+        speed_fallback  = 0,
+        kv_ability      = "magnataur_reverse_polarity",
+        kv_cast_point_key = "AbilityCastPoint",
+        cast_point      = 0.55,
+        post_cast_delay = 0,
+        impact_pos      = "caster",
+    },
+
+    -- Sven Storm Bolt: homing projectile that stuns + damages target.
+    -- Cast point 0.5s. Projectile travel ~1100 u/s on top of cast point.
+    -- impact_pos=self. Modeled as cast_point_targeted; projectile travel
+    -- is post-cast and the brain treats the threat as armed at end of
+    -- cast point (mirrors AA Ice Blast pattern).
+    modifier_sven_storm_bolt = {
+        kind            = "cast_point_targeted",
+        speed_source    = "instant",
+        speed_fallback  = 0,
+        kv_ability      = "sven_storm_bolt",
+        kv_cast_point_key = "AbilityCastPoint",
+        cast_point      = 0.5,
+        post_cast_delay = 0,
+        impact_pos      = "self",
+    },
+
+    -- Slardar Slithereen Crush: PBAoE stun + damage around Slardar. Cast
+    -- point 0.3s. impact_pos=caster.
+    modifier_slardar_slithereen_crush = {
+        kind            = "cast_point_targeted",
+        speed_source    = "instant",
+        speed_fallback  = 0,
+        kv_ability      = "slardar_slithereen_crush",
+        kv_cast_point_key = "AbilityCastPoint",
+        cast_point      = 0.3,
+        post_cast_delay = 0,
+        impact_pos      = "caster",
+    },
+
+    -- Lich Chain Frost: bouncing projectile, initial target + jumps. Cast
+    -- point 0.45s. impact_pos=self (initial target = Lina if she's
+    -- targeted). Bounces are on their own dispatch.
+    modifier_lich_chain_frost = {
+        kind            = "cast_point_targeted",
+        speed_source    = "instant",
+        speed_fallback  = 0,
+        kv_ability      = "lich_chain_frost",
+        kv_cast_point_key = "AbilityCastPoint",
+        cast_point      = 0.45,
+        post_cast_delay = 0,
+        impact_pos      = "self",
+    },
+
+    -- Lina Light Strike Array: delayed AoE-at-ground. Cast point 0.55s
+    -- then 0.5s explosion delay (the visible "ground glow" wind-up).
+    -- impact_pos=self (Lina catches it if she's in the AoE; brain may
+    -- defer / dodge during the combined ~1.05s window).
+    modifier_lina_light_strike_array = {
+        kind            = "cast_point_targeted",
+        speed_source    = "instant",
+        speed_fallback  = 0,
+        kv_ability      = "lina_light_strike_array",
+        kv_cast_point_key = "AbilityCastPoint",
+        cast_point      = 0.55,
+        post_cast_delay = 0.5,
+        impact_pos      = "self",
+    },
+
+    -- Tiny Avalanche: line/AoE damage at ground over duration. Cast point
+    -- 0.3s. impact_pos=self.
+    modifier_tiny_avalanche = {
+        kind            = "cast_point_targeted",
+        speed_source    = "instant",
+        speed_fallback  = 0,
+        kv_ability      = "tiny_avalanche",
+        kv_cast_point_key = "AbilityCastPoint",
+        cast_point      = 0.3,
+        post_cast_delay = 0,
+        impact_pos      = "self",
+    },
+
+    -- v0.5.69 Phase 4 slice 4: more projectiles + late-stage threats.
+    -- 8 new entries. Same cast_point_targeted approximation pattern as
+    -- slices 1-3 (kind taxonomy still lacks projectile_homing /
+    -- cast_point_aoe variants). Cast point + modifier names from common
+    -- Dota knowledge; refine when a consumer comes online and demo
+    -- evidence is available.
+
+    -- Pudge Meat Hook: skill-shot projectile that drags hit target back
+    -- to Pudge. Cast point 0.3s. impact_pos=self (Lina is hooked).
+    -- Pre-cast saves: BKB blocks the magic damage but NOT the drag (the
+    -- hook is undispellable). Lotus reflect doesn't work. Eul / WW dodge
+    -- via airborne. Best save is the W stun on Pudge during the cast
+    -- point or the hook flight.
+    modifier_pudge_meat_hook = {
+        kind            = "cast_point_targeted",
+        speed_source    = "instant",
+        speed_fallback  = 0,
+        kv_ability      = "pudge_meat_hook",
+        kv_cast_point_key = "AbilityCastPoint",
+        cast_point      = 0.3,
+        post_cast_delay = 0,
+        impact_pos      = "self",
+    },
+
+    -- Mirana Sacred Arrow: long-range straight-line projectile, stun +
+    -- damage that scales with travel distance. Cast point 0.3s.
+    -- impact_pos=self (Lina is the target). BKB blocks; Lotus doesn't
+    -- reflect; airborne dodge works.
+    modifier_mirana_arrow = {
+        kind            = "cast_point_targeted",
+        speed_source    = "instant",
+        speed_fallback  = 0,
+        kv_ability      = "mirana_arrow",
+        kv_cast_point_key = "AbilityCastPoint",
+        cast_point      = 0.3,
+        post_cast_delay = 0,
+        impact_pos      = "self",
+    },
+
+    -- Skywrath Mystic Flare: AoE-at-ground thinker that does massive
+    -- damage over 2s (split across targets, full damage if alone). Cast
+    -- point 0.5s. impact_pos=self (the AoE catches Lina if she's in it).
+    -- Best save: BKB during cast point, OR move out of the radius
+    -- (375u) during the 2s damage window.
+    modifier_skywrath_mage_mystic_flare_thinker = {
+        kind            = "cast_point_targeted",
+        speed_source    = "instant",
+        speed_fallback  = 0,
+        kv_ability      = "skywrath_mage_mystic_flare",
+        kv_cast_point_key = "AbilityCastPoint",
+        cast_point      = 0.5,
+        post_cast_delay = 0,
+        impact_pos      = "self",
+    },
+
+    -- Ogre Magi Fireblast: single-target projectile stun + damage. Cast
+    -- point 0.4s. impact_pos=self. Multicast doubles / triples the
+    -- effect on chance. BKB blocks; airborne dodge works.
+    modifier_ogre_magi_fireblast = {
+        kind            = "cast_point_targeted",
+        speed_source    = "instant",
+        speed_fallback  = 0,
+        kv_ability      = "ogre_magi_fireblast",
+        kv_cast_point_key = "AbilityCastPoint",
+        cast_point      = 0.4,
+        post_cast_delay = 0,
+        impact_pos      = "self",
+    },
+
+    -- Crystal Maiden Frostbite: single-target root + DoT. Cast point
+    -- 0.3s. impact_pos=self. Lotus reflect works (it's a debuff).
+    -- BKB blocks the magic damage AND the root.
+    modifier_crystal_maiden_frostbite = {
+        kind            = "cast_point_targeted",
+        speed_source    = "instant",
+        speed_fallback  = 0,
+        kv_ability      = "crystal_maiden_frostbite",
+        kv_cast_point_key = "AbilityCastPoint",
+        cast_point      = 0.3,
+        post_cast_delay = 0,
+        impact_pos      = "self",
+    },
+
+    -- Jakiro Macropyre: long line of fire damage from a thinker entity.
+    -- Cast point 0.5s. impact_pos=self (Lina catches the line damage if
+    -- she's in it). Move out of the line during the 7-9s damage window.
+    modifier_jakiro_macropyre_thinker = {
+        kind            = "cast_point_targeted",
+        speed_source    = "instant",
+        speed_fallback  = 0,
+        kv_ability      = "jakiro_macropyre",
+        kv_cast_point_key = "AbilityCastPoint",
+        cast_point      = 0.5,
+        post_cast_delay = 0,
+        impact_pos      = "self",
+    },
+
+    -- Witch Doctor Maledict: single-target curse + delayed damage burst
+    -- at every 4s tick based on HP lost. Cast point 0.3s. impact_pos=
+    -- self. The dispellable curse can be cleansed (BKB / Lotus / Manta);
+    -- the damage bursts are the real threat and they're prophylactic.
+    modifier_witch_doctor_maledict = {
+        kind            = "cast_point_targeted",
+        speed_source    = "instant",
+        speed_fallback  = 0,
+        kv_ability      = "witch_doctor_maledict",
+        kv_cast_point_key = "AbilityCastPoint",
+        cast_point      = 0.3,
+        post_cast_delay = 0,
+        impact_pos      = "self",
+    },
+
+    -- Dazzle Poison Touch: chain stun + slow + damage starting on
+    -- single-target. Cast point 0.3s. impact_pos=self. Dispel removes
+    -- (Manta / Lotus reflect on initial cast); BKB blocks.
+    modifier_dazzle_poison_touch = {
+        kind            = "cast_point_targeted",
+        speed_source    = "instant",
+        speed_fallback  = 0,
+        kv_ability      = "dazzle_poison_touch",
+        kv_cast_point_key = "AbilityCastPoint",
+        cast_point      = 0.3,
+        post_cast_delay = 0,
+        impact_pos      = "self",
+    },
+
+    -- v0.5.71 Phase 4 slice 6: Beastmaster Primal Roar + Tide Ravage.
+    -- Both are LINA_SAVE_OVERRIDES targets (high-impact hard-disable ults
+    -- that previously fell through to the generic lockdown chain). Adding
+    -- them here so the v0.5.70 cast_point_too_early defer gate covers
+    -- them with the precise catalog cast_point rather than the coarse
+    -- CAST_POINT_THREATS.cp_default fallback (which neither has anyway).
+
+    -- Beastmaster Primal Roar: line skillshot, primary target 4s stun +
+    -- cone 2s slow. Cast point 0.4s. impact_pos=self (Lina is the primary
+    -- target if she's at the line center). BKB blocks; airborne dodges.
+    -- v0.5.73 name fix: was modifier_beastmaster_primal_roar_stun (with
+    -- _stun suffix) in v0.5.71; canonical per lib THREATS_ON_SELF L417 +
+    -- ABILITY_TO_THREAT L761 is the bare modifier_beastmaster_primal_roar.
+    modifier_beastmaster_primal_roar = {
+        kind            = "cast_point_targeted",
+        speed_source    = "instant",
+        speed_fallback  = 0,
+        kv_ability      = "beastmaster_primal_roar",
+        kv_cast_point_key = "AbilityCastPoint",
+        cast_point      = 0.4,
+        post_cast_delay = 0,
+        impact_pos      = "self",
+    },
+
+    -- Tide Ravage: PBAoE 4s stun + damage centered on Tide. Cast point
+    -- 0.55s. impact_pos=caster (the AoE radiates from Tide's position).
+    -- BKB blocks; airborne dodges.
+    modifier_tidehunter_ravage = {
+        kind            = "cast_point_targeted",
+        speed_source    = "instant",
+        speed_fallback  = 0,
+        kv_ability      = "tidehunter_ravage",
+        kv_cast_point_key = "AbilityCastPoint",
+        cast_point      = 0.55,
+        post_cast_delay = 0,
+        impact_pos      = "caster",
+    },
+}
+
+-- v0.5.56: cast_point single source of truth.
+-- The compute_arrival_time catalog (THREAT_ARRIVAL_TIMING) is the
+-- authoritative static cast_point per threat. CAST_POINT_THREATS.cp_default
+-- (the fallback used by Lina's arming sites when Ability.GetCastPoint
+-- returns 0 / unavailable) is synced from there at load time so future
+-- catalog edits propagate without touching two tables.
+-- v0.5.66: catalog now covers all 9 CAST_POINT_THREATS entries (Phase 4
+-- slice 1 added Doom + AA Ice Blast + OD Sanity Eclipse + Tinker Laser +
+-- Zeus Thundergods + Sand King Epicenter, all cast_point_targeted, same
+-- shape as Lion/Sniper/Lina). The sync loop now writes back to ALL nine
+-- cp_default fields; no more "absent from catalog keep their literal"
+-- carve-out.
+for _mod, _t in pairs(ThreatData.THREAT_ARRIVAL_TIMING) do
+    local _cp_entry = ThreatData.CAST_POINT_THREATS[_mod]
+    if _cp_entry and _t.cast_point and _t.cast_point > 0 then
+        _cp_entry.cp_default = _t.cast_point
+    end
+end
+
 ----------------------------------------------------------------------------
--- THREAT_TIMING , when to fire the save relative to the threat
+-- THREAT_TIMING - when to fire the save relative to the threat
 ----------------------------------------------------------------------------
 
 ---When the hero should fire its save. Values:
----  `pre_cast`     , fire during the cast point window, BEFORE modifier lands
+---  `pre_cast`     - fire during the cast point window, BEFORE modifier lands
 ---                   (target invuln/immune at impact = cast fizzles)
----  `at_impact`    , fire just before threat impact (homing charges; the
+---  `at_impact`    - fire just before threat impact (homing charges; the
 ---                   armed-ETA system handles this in the brain)
----  `mid_channel`  , fire any time during the channel (Dismember tick by tick)
----  `reactive`     , fire after modifier lands; the save dispels or escapes
----  `prophylactic` , pre-arm before threat manifests (rare; Doom is unfixable
+---  `mid_channel`  - fire any time during the channel (Dismember tick by tick)
+---  `reactive`     - fire after modifier lands; the save dispels or escapes
+---  `prophylactic` - pre-arm before threat manifests (rare; Doom is unfixable
 ---                   post-cast, so saves are pre-cast or none)
 ---
 ---These describe WHEN to fire. See THREAT_CATEGORY below for WHAT KIND of
 ---response is best (anti-close-gap vs threat-stopper vs etc.). Timing and
----category are independent axes , a `close_gap` threat is dispatched via
+---category are independent axes - a `close_gap` threat is dispatched via
 ---`at_impact` timing, a `channel_on_self` threat via `mid_channel`.
 ---@type table<string, string>
 ThreatData.THREAT_TIMING = {
@@ -1347,8 +2112,8 @@ ThreatData.THREAT_TIMING = {
     modifier_crystal_maiden_freezing_field = "mid_channel",
     modifier_spirit_breaker_charge_of_darkness = "at_impact",
     modifier_tusk_snowball_movement      = "at_impact",
-    modifier_kez_grappling_claw_slow          = "at_impact",  -- v6.15.162 (verify) , fire as Kez swings in
-    -- v6.15.163 batch 1 , modern hero pool
+    modifier_kez_grappling_claw_slow          = "at_impact",  -- v6.15.162 (verify) - fire as Kez swings in
+    -- v6.15.163 batch 1 - modern hero pool
     modifier_ringmaster_impalement       = "pre_cast",
     modifier_marci_grapple               = "at_impact",
     modifier_muerta_dead_shot            = "pre_cast",
@@ -1361,7 +2126,7 @@ ThreatData.THREAT_TIMING = {
     modifier_grimstroke_ink_creature     = "reactive",
     modifier_pangolier_swashbuckle       = "at_impact",
     modifier_dark_willow_cursed_crown    = "pre_cast",
-    -- v6.15.164 batch 2 , older-hero kidnaps / gap-closes / catches
+    -- v6.15.164 batch 2 - older-hero kidnaps / gap-closes / catches
     modifier_faceless_void_chronosphere_freeze  = "pre_cast",
     modifier_batrider_flaming_lasso      = "reactive",
     modifier_tiny_toss                   = "pre_cast",
@@ -1421,7 +2186,7 @@ ThreatData.THREAT_TIMING = {
     -- v6.7 extrapolation
     modifier_shadow_shaman_voodoo        = "pre_cast",
     modifier_zuus_lightning_bolt         = "pre_cast",
-    modifier_zuus_thundergods_wrath      = "pre_cast",  -- 2s cast point , plenty of time
+    modifier_zuus_thundergods_wrath      = "pre_cast",  -- 2s cast point - plenty of time
     modifier_tidehunter_ravage           = "pre_cast",
     modifier_earthshaker_echo_slam       = "pre_cast",
     modifier_magnataur_reverse_polarity_stun  = "pre_cast",
@@ -1432,52 +2197,52 @@ ThreatData.THREAT_TIMING = {
     modifier_earth_spirit_rolling_boulder = "at_impact",
     modifier_life_stealer_open_wounds    = "reactive",
     modifier_pugna_life_drain            = "reactive",
-    modifier_disruptor_kinetic_field_remnant = "reactive",  -- v6.15.10 , fires once trapped
-    modifier_abyssal_underlord_pit_of_malice_ensare = "reactive",  -- v6.15.256 , fires once snared
+    modifier_disruptor_kinetic_field_remnant = "reactive",  -- v6.15.10 - fires once trapped
+    modifier_abyssal_underlord_pit_of_malice_ensare = "reactive",  -- v6.15.256 - fires once snared
 }
 
 ----------------------------------------------------------------------------
--- THREAT_CATEGORY , semantic classification of what KIND of response wins
+-- THREAT_CATEGORY - semantic classification of what KIND of response wins
 --
 -- This is the "anti-close-gap vs threat-stopper" axis the user asked about,
 -- broken out as data so the brain logs it and per-hero overrides can tune
--- by category. The flat RECOMMENDED_SAVES list still drives selection , but
+-- by category. The flat RECOMMENDED_SAVES list still drives selection - but
 -- the category tells us at a glance what RESPONSE PROFILE matters:
 --
---  `close_gap`         , homing approach (Bara Charge, Tusk Snowball).
+--  `close_gap`         - homing approach (Bara Charge, Tusk Snowball).
 --                        Best response: cancel-on-caster (grenade-at-caster,
 --                        Pike-on-Bara forced movement). Save fires during
 --                        approach via armed_threats_tick.
---  `channel_on_self`   , enemy channels on Sniper (Dismember, Fiend Grip,
+--  `channel_on_self`   - enemy channels on Sniper (Dismember, Fiend Grip,
 --                        Shackles, Death Ward). Best response: break channel
 --                        (grenade-at-caster ROOT_DISABLES) OR self-dispel
 --                        (Manta, Eul). Fires pre-cast via anim or reactive
 --                        via OnModifierCreate.
---  `targeted_disable`  , pre-cast hard CC (Nightmare, Hex, Ensnare, Doom).
+--  `targeted_disable`  - pre-cast hard CC (Nightmare, Hex, Ensnare, Doom).
 --                        Best response: invuln/immune during cast point so
 --                        the cast fizzles or the modifier never lands.
---  `targeted_burst`    , high-damage targeted ult (Finger, Laguna). Best
+--  `targeted_burst`    - high-damage targeted ult (Finger, Laguna). Best
 --                        response: invuln / magic_barrier / reflect to
 --                        absorb or bounce.
---  `delayed_aoe`       , AoE landing after a delay (LSA, Black Hole,
+--  `delayed_aoe`       - AoE landing after a delay (LSA, Black Hole,
 --                        Freezing Field). Best response: displacement
---                        (Pike, Force, Blink, grenade-self) , get out.
---  `line_projectile`   , dodgeable line shot (Hook, Pounce, Ice Shards,
+--                        (Pike, Force, Blink, grenade-self) - get out.
+--  `line_projectile`   - dodgeable line shot (Hook, Pounce, Ice Shards,
 --                        Arrow). Best response: perpendicular displacement.
---  `physical_chase`    , sustained physical pressure (PA Strike, Ursa
+--  `physical_chase`    - sustained physical pressure (PA Strike, Ursa
 --                        Overpower). Best response: invis breaks target-
 --                        lock, Ghost/Crimson/Blade Mail reduce/return.
---  `drain`             , resource/HP drain channels (Static Link, Mana
+--  `drain`             - resource/HP drain channels (Static Link, Mana
 --                        Drain). Best response: dispel or move out of
 --                        tether range.
---  `lockdown`          , forced attack-only or taunt (Duel, Berserker's
+--  `lockdown`          - forced attack-only or taunt (Duel, Berserker's
 --                        Call). Best response: Satanic lifesteal-through
 --                        or Blade Mail return-damage.
 --
 -- For the user's "separate section" question: this categorization PROVIDES
 -- the separation in data without splitting code paths. Each save-issue site
 -- (armed_threats_tick / anim_channel_start / OnModifierCreate / etc.) still
--- goes through `try_save_self` , the per-threat overrides in each hero's
+-- goes through `try_save_self` - the per-threat overrides in each hero's
 -- SAVE_OVERRIDES table express the category-appropriate preferences.
 ----------------------------------------------------------------------------
 
@@ -1486,8 +2251,8 @@ ThreatData.THREAT_CATEGORY = {
     -- Close-gap (homing)
     modifier_spirit_breaker_charge_of_darkness = "close_gap",
     modifier_tusk_snowball_movement            = "close_gap",
-    modifier_kez_grappling_claw_slow                = "close_gap",       -- v6.15.162 (verify) , Kez Grappling Claw
-    -- v6.15.163 batch 1 , modern hero pool
+    modifier_kez_grappling_claw_slow                = "close_gap",       -- v6.15.162 (verify) - Kez Grappling Claw
+    -- v6.15.163 batch 1 - modern hero pool
     modifier_ringmaster_impalement             = "line_projectile",
     modifier_marci_grapple                     = "close_gap",
     modifier_muerta_dead_shot                  = "targeted_disable",
@@ -1500,7 +2265,7 @@ ThreatData.THREAT_CATEGORY = {
     modifier_grimstroke_ink_creature           = "targeted_disable",
     modifier_pangolier_swashbuckle             = "close_gap",
     modifier_dark_willow_cursed_crown          = "targeted_disable",
-    -- v6.15.164 batch 2 , older-hero kidnaps / gap-closes / catches
+    -- v6.15.164 batch 2 - older-hero kidnaps / gap-closes / catches
     modifier_faceless_void_chronosphere_freeze        = "delayed_aoe",
     modifier_batrider_flaming_lasso            = "targeted_disable",
     modifier_tiny_toss                         = "targeted_disable",
@@ -1699,7 +2464,7 @@ function ThreatData.CategoryOf(threat_mod)
 end
 
 ----------------------------------------------------------------------------
--- THREAT_SEVERITY , drives CD-tier reservation logic
+-- THREAT_SEVERITY - drives CD-tier reservation logic
 ----------------------------------------------------------------------------
 
 ---How dangerous is this threat? Low-severity threats shouldn't burn high-CD
@@ -1722,8 +2487,8 @@ ThreatData.THREAT_SEVERITY = {
     modifier_naga_siren_ensnare          = "medium",
     modifier_shadow_shaman_shackles      = "medium",
     modifier_tusk_snowball_movement      = "medium",
-    modifier_kez_grappling_claw_slow          = "medium",  -- v6.15.162 (verify) , gap-close + 80% slow + lifesteal hit
-    -- v6.15.163 batch 1 , modern hero pool
+    modifier_kez_grappling_claw_slow          = "medium",  -- v6.15.162 (verify) - gap-close + 80% slow + lifesteal hit
+    -- v6.15.163 batch 1 - modern hero pool
     modifier_ringmaster_impalement       = "medium",
     modifier_marci_grapple               = "high",
     modifier_muerta_dead_shot            = "medium",
@@ -1736,7 +2501,7 @@ ThreatData.THREAT_SEVERITY = {
     modifier_grimstroke_ink_creature     = "medium",
     modifier_pangolier_swashbuckle       = "medium",
     modifier_dark_willow_cursed_crown    = "medium",
-    -- v6.15.164 batch 2 , older-hero kidnaps / gap-closes / catches
+    -- v6.15.164 batch 2 - older-hero kidnaps / gap-closes / catches
     modifier_faceless_void_chronosphere_freeze  = "high",
     modifier_batrider_flaming_lasso      = "high",
     modifier_tiny_toss                   = "medium",
@@ -1796,7 +2561,7 @@ ThreatData.THREAT_SEVERITY = {
     modifier_ursa_overpower              = "low",
     -- v6.14.1 M4: bumped to medium so the BKB-first RECOMMENDED_SAVES entry
     -- isn't reserve-penalized below the firing threshold. Berserker's Call
-    -- locks a Sniper for 3s of attack-forced , BKB is the genuine answer.
+    -- locks a Sniper for 3s of attack-forced - BKB is the genuine answer.
     modifier_axe_berserkers_call         = "medium",
     modifier_tusk_ice_shards_thinker     = "low",
     -- v6.7 extrapolation
@@ -1911,7 +2676,7 @@ ThreatData.THREAT_SEVERITY = {
 }
 
 ----------------------------------------------------------------------------
--- SAVE_COOLDOWN_TIER , reserve-the-good-stuff logic
+-- SAVE_COOLDOWN_TIER - reserve-the-good-stuff logic
 ----------------------------------------------------------------------------
 
 ---Save items by CD tier. High-tier saves (long CD, big effect) get a -score
@@ -1921,7 +2686,7 @@ ThreatData.THREAT_SEVERITY = {
 -- v6.7 (2026-05-11): cooldown tier audit against Liquipedia 7.41C.
 --   Wind Waker 60s → 19s (low tier now, was medium)
 --   Blade Mail 16s → 25s (medium tier now, was low)
---   item_eternal_shroud REMOVED from game in 7.41 , entry deleted.
+--   item_eternal_shroud REMOVED from game in 7.41 - entry deleted.
 --   Lotus Orb "limited charges" comment stale (charge system removed; 15s CD).
 ThreatData.SAVE_COOLDOWN_TIER = {
     -- Existing self-protection / dispel
@@ -1953,12 +2718,12 @@ ThreatData.SAVE_COOLDOWN_TIER = {
 }
 
 ----------------------------------------------------------------------------
--- Pure helpers , no side effects, no entity introspection
+-- Pure helpers - no side effects, no entity introspection
 ----------------------------------------------------------------------------
 
 ---Returns true iff `save_name`'s kinds intersect the threat's counter list.
 ---When `threat_mod` is nil (no filter requested) returns true.
----Unknown saves / threats also return true (allow rather than reject ,
+---Unknown saves / threats also return true (allow rather than reject -
 ---defensive default for not-yet-mapped cases).
 ---@param save_name  string   key into SAVE_KIND
 ---@param threat_mod string|nil  modifier name (key into THREAT_COUNTER)
@@ -2039,7 +2804,7 @@ function ThreatData.SaveReservePenalty(save_name, threat_mod)
 end
 
 ----------------------------------------------------------------------------
--- v6.13 Defense F#12 , ENEMY_BUFF_THREATS
+-- v6.13 Defense F#12 - ENEMY_BUFF_THREATS
 --
 -- Buffs that the ENEMY casts on themselves which threaten Sniper. Distinct
 -- from THREATS_ON_SELF (debuffs on Sniper). OnModifierCreate routes here
@@ -2072,7 +2837,7 @@ ThreatData.ENEMY_BUFF_THREATS = {
         category = "physical_chase_buff", role = "physical_burst",
         severity = "high",   verify = true,
     },
-    -- Silver Edge break = passive (Headshot) disabled. Informational ,
+    -- Silver Edge break = passive (Headshot) disabled. Informational -
     -- offense DPS estimate over-counts when broken; no defense action.
     modifier_item_silver_edge_debuff = {
         category = "passive_break", role = "informational",
@@ -2108,7 +2873,7 @@ ThreatData.ENEMY_BUFF_THREATS = {
 }
 
 ----------------------------------------------------------------------------
--- v6.13 Cross F#7 , derived ESCAPE_ITEM_NAMES
+-- v6.13 Cross F#7 - derived ESCAPE_ITEM_NAMES
 --
 -- Single source of truth: a target's "escape items" are exactly the items
 -- in SAVE_KIND that carry one of {invuln, dispel_basic, reflect_target,
@@ -2116,7 +2881,7 @@ ThreatData.ENEMY_BUFF_THREATS = {
 -- drifted when SAVE_KIND changed (v6.7 BKB gained dispel_basic; Diffusal/
 -- Disperser carry dispel_basic but weren't in target.lua's list).
 --
--- Derived at module-load time. SAVE_KIND is data , adding a new save here
+-- Derived at module-load time. SAVE_KIND is data - adding a new save here
 -- automatically updates the escape-window detection.
 ----------------------------------------------------------------------------
 do
@@ -2152,7 +2917,7 @@ end
 -- these active, the brain MUST refuse R (the cast reflects damage back). This
 -- is OFFENSIVE-side guarding (hero-as-attacker), distinct from THREATS_ON_SELF
 -- (hero-as-defender). Lotus stays out of this table - Target.HasReadyLotus is
--- engine-side and already filtered by r_target_blocked (the brain source:2178).
+-- engine-side and already filtered by r_target_blocked (Lina.lua:2178).
 -- Add a new entry only when (a) the modifier name is VPK-verified per lesson
 -- 13, and (b) the effect reflects damage back to the caster (not merely
 -- absorbs or dispels - those are separate concerns).
@@ -2192,7 +2957,7 @@ ThreatData.SPELL_DEFLECT_MODIFIERS = {
 --
 -- Source-of-truth markers in comments:
 --   vpk     -- confirmed via grep against pak01_*.vpk
---   audit   -- LINA_DEFER_TO_ARMED (the brain source L728-741) or other in-tree usage
+--   audit   -- LINA_DEFER_TO_ARMED (Lina.lua L728-741) or other in-tree usage
 --   manual  -- known-pair from threat catalog ownership, no separate VPK hit
 ----------------------------------------------------------------------------
 
@@ -2202,7 +2967,7 @@ ThreatData.CANONICAL_MOD_ALIASES = {
     -- LINA_SAVE_OVERRIDES key and ABILITY_TO_THREAT value).
     -- vpk: pak01_009 ships modifier_spirit_breaker_charge_of_darkness,
     --      _debuff, _target as engine-visible names.
-    -- audit: the brain source LINA_DEFER_TO_ARMED L730 maps _vision -> "bara_charge",
+    -- audit: Lina.lua LINA_DEFER_TO_ARMED L730 maps _vision -> "bara_charge",
     --        confirming _vision is a real victim-side sibling the brain sees.
     modifier_spirit_breaker_charge_of_darkness_vision = "modifier_spirit_breaker_charge_of_darkness",  -- audit
     modifier_spirit_breaker_charge_of_darkness_target = "modifier_spirit_breaker_charge_of_darkness",  -- vpk
@@ -2212,7 +2977,7 @@ ThreatData.CANONICAL_MOD_ALIASES = {
     -- ABILITY_TO_THREAT value, RECOMMENDED_SAVES key). _target is the
     -- victim-side root-on-impact debuff; _movement_friendly is the carried-ally
     -- variant (Lina-as-ally; lock-domain irrelevant but folded for safety).
-    -- audit: the brain source LINA_DEFER_TO_ARMED L729 maps _target -> "tusk_snowball".
+    -- audit: Lina.lua LINA_DEFER_TO_ARMED L729 maps _target -> "tusk_snowball".
     -- vpk: pak01_009 ships _movement_friendly. Canonical _movement itself is
     -- field-validated (THREATS_ON_SELF, ABILITY_TO_THREAT) rather than direct
     -- VPK-grep-validated; engine-vs-VPK distinction documented per verifier.
@@ -2221,7 +2986,7 @@ ThreatData.CANONICAL_MOD_ALIASES = {
     modifier_tusk_snowball_movement_friendly   = "modifier_tusk_snowball_movement",  -- vpk
 
     -- PA Phantom Strike. Canonical = _target (catalog key, anim-stamp target).
-    -- audit: the brain source LINA_DEFER_TO_ARMED L740 maps _target -> instant_blink arm,
+    -- audit: Lina.lua LINA_DEFER_TO_ARMED L740 maps _target -> instant_blink arm,
     -- confirming _target IS the canonical the brain reasons in.
     -- The bare modifier_phantom_assassin_phantom_strike does NOT exist as a
     -- separate engine modifier (pak01 grep returns only the aghsfort variant);
@@ -2325,7 +3090,7 @@ function ThreatData.CanonicalMod(mod_name)
 end
 
 -- Exported alias under the longer name used in the audit doc. Both names
--- resolve to the same function so the brain source / lib/defense.lua can pick whichever
+-- resolve to the same function so Lina.lua / lib/defense.lua can pick whichever
 -- reads better at call site without an extra indirection.
 ThreatData.CanonicalizeThreatMod = ThreatData.CanonicalMod
 -- Third alias under the bare 'Canonicalize' spelling: zero-cost defensive
