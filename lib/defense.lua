@@ -913,4 +913,183 @@ function Dispatcher:TrySaveSelf(intent, threat_mod, threat_caster,
                          armed_entry, on_save_fired, ctx)
 end
 
+----------------------------------------------------------------------------
+-- ETA resolver factories (v0.5.74 lift from Lina LINA_ETA_RESOLVERS)
+----------------------------------------------------------------------------
+--
+-- Generic factories that build per-mod ETA-resolver closures compatible with
+-- the resolve_ttl signature (caster, target, armed_entry, ability_handle,
+-- now_t, canonical_mod). Heroes opt in by populating cfg.eta_resolver with
+-- entries built by these factories. All four are stateless and engine-only;
+-- no hero state leaks into the closures.
+--
+-- Lifted from Lina.lua's _lina_eta_make_{cast_point,remaining,dist_speed,line}
+-- per the v0.5.74 lib-first audit. Each is pure data + engine calls; building
+-- the resolver table is then just `EtaR.CastPoint(0.5)`, `EtaR.Remaining(
+-- "modifier_lion_voodoo", nil, 0.5)`, etc. Sniper picks them up for free
+-- once it migrates to a Defense-cfg dispatcher.
+
+Defense.EtaResolvers = {}
+
+-- Distance helper inlined to keep lib/defense.lua dependency-free
+-- (lib/geometry has dist_between but introducing a require would couple two
+-- libs that have been independent so far). Two-line copy is fine.
+local function _dist2d(a_unit, b_unit)
+    if not a_unit or not b_unit then return 0 end
+    if Entity.IsEntity and (not Entity.IsEntity(a_unit) or not Entity.IsEntity(b_unit)) then
+        return 0
+    end
+    local a_ok, a = pcall(Entity.GetAbsOrigin, a_unit)
+    local b_ok, b = pcall(Entity.GetAbsOrigin, b_unit)
+    if not (a_ok and b_ok and a and b) then return 0 end
+    local dx, dy = (a.x or 0) - (b.x or 0), (a.y or 0) - (b.y or 0)
+    return math.sqrt(dx * dx + dy * dy)
+end
+
+---Pre-cast / cast-point class. Returns a resolver that prefers
+---armed.cast_point + armed.arm_t (stamped at arm-time, drift-free); falls
+---back to a pcall-wrapped live `Ability.GetCastPoint(handle, true)`, then
+---cp_default. Result clamped to >= floor_s (default 0.1).
+---@param cp_default number  fallback cast-point seconds
+---@param floor_s number?  lower clamp on returned ETA (default 0.1)
+function Defense.EtaResolvers.CastPoint(cp_default, floor_s)
+    floor_s = floor_s or 0.1
+    return function(_caster, _target, armed, ab, now_t)
+        if armed and armed.cast_point and armed.arm_t then
+            local rem = armed.cast_point - ((now_t or 0) - armed.arm_t)
+            if rem < floor_s then rem = floor_s end
+            return rem
+        end
+        if ab and Ability.GetCastPoint then
+            local ok, cp = pcall(Ability.GetCastPoint, ab, true)
+            if ok and type(cp) == "number" and cp > 0 then
+                if cp < floor_s then cp = floor_s end
+                return cp
+            end
+        end
+        local d = cp_default or 0.5
+        if d < floor_s then d = floor_s end
+        return d
+    end
+end
+
+---Active-debuff class. Returns a resolver that reads
+---`NPC.GetModifierRemaining(target, mod_name)`. cap_s clamps so the periodic
+---re-fire pattern (persistent_threats_tick) can re-acquire before the lock
+---TTL elapses. Pcall-wrapped because NPC.GetModifierRemaining is not always
+---bound; if absent rem stays 0 and floors to floor_s (safe, minimal lock).
+---@param mod_name string  target-side modifier to read remaining-time from
+---@param cap_s number?  upper clamp (default unlimited)
+---@param floor_s number?  lower clamp (default 0.1)
+function Defense.EtaResolvers.Remaining(mod_name, cap_s, floor_s)
+    floor_s = floor_s or 0.1
+    return function(_caster, target, _armed, _ab, _now_t)
+        local rem = 0
+        if target and Entity.IsEntity and Entity.IsEntity(target) and NPC.GetModifierRemaining then
+            local ok, v = pcall(NPC.GetModifierRemaining, target, mod_name)
+            if ok and type(v) == "number" then rem = v end
+        end
+        if cap_s and rem > cap_s then rem = cap_s end
+        if rem < floor_s then rem = floor_s end
+        return rem
+    end
+end
+
+---Armed-chain / instant-blink class. Returns d/speed using the armed entry's
+---stamped eta_speed when present, else default_speed. blink_cap clamps the
+---result for blink classes (e.g., PA Phantom Strike, QoP Blink); nil means
+---no cap. Result floored at 0.05s.
+---@param default_speed number  fallback travel speed (u/s)
+---@param blink_cap number?  upper clamp (typical 2.0s for blinks)
+function Defense.EtaResolvers.DistSpeed(default_speed, blink_cap)
+    return function(caster, target, armed, _ab, _now_t)
+        local v = (armed and armed.eta_speed) or default_speed
+        if not v or v <= 0 then v = default_speed end
+        local d = _dist2d(caster, target)
+        local eta = d / v
+        if blink_cap and eta > blink_cap then eta = blink_cap end
+        if eta < 0.05 then eta = 0.05 end
+        return eta
+    end
+end
+
+---Line-projectile class (meat hook, mirana arrow, sven bolt). Returns
+---d/speed when caster + target both exist; falls back to armed.eta_trigger
+---or fog_fallback when caster is in FoW (caster nil).
+---@param speed number  projectile speed (u/s)
+---@param fog_fallback number?  fallback when caster invisible (default 1.0)
+function Defense.EtaResolvers.Line(speed, fog_fallback)
+    return function(caster, target, armed, _ab, _now_t)
+        if not caster or not target or (Entity.IsEntity and not Entity.IsEntity(caster)) then
+            local fb = (armed and armed.eta_trigger) or fog_fallback or 1.0
+            if fb < 0.1 then fb = 0.1 end
+            return fb
+        end
+        local d = _dist2d(caster, target)
+        local eta = d / (speed or 1100)
+        if eta < 0.1 then eta = 0.1 end
+        return eta
+    end
+end
+
+---Generic catalog-aware fallback. Returns a closure bound to the supplied
+---TD (so the lib doesn't take a circular dependency on threat_data). The
+---closure consumes the canonical_mod 6th arg from resolve_ttl and looks up
+---the catalog's THREAT_ARRIVAL_TIMING entry. Branches by entry.kind:
+---  channel_at_caster -> caster-side NPC.GetModifierRemaining
+---  cast_point_*      -> cast_point + post_cast_delay
+---  homing kinds      -> dist(caster, target) / speed_fallback
+---  no catalog        -> target-side NPC.GetModifierRemaining
+---  no data           -> nil (lib falls back to cfg.fallback_lock_ttl_s)
+---@param TD table  ThreatData module (lib.threat_data)
+---@param opts table?  { lock_cap_s = number }  default 1.7s
+function Defense.MakeGenericEtaResolver(TD, opts)
+    opts = opts or {}
+    local lock_cap_s = opts.lock_cap_s or 1.7
+    return function(caster, target, _armed, _ab, _now_t, mod_name)
+        if not (mod_name and TD and TD.THREAT_ARRIVAL_TIMING) then return nil end
+        local entry = TD.THREAT_ARRIVAL_TIMING[mod_name]
+        if entry then
+            if entry.kind == "channel_at_caster" then
+                local rem = 0
+                if caster and Entity.IsEntity and Entity.IsEntity(caster)
+                   and NPC.GetModifierRemaining then
+                    local ok, v = pcall(NPC.GetModifierRemaining, caster, mod_name)
+                    if ok and type(v) == "number" and v > 0 then rem = v end
+                end
+                if rem > 0 then
+                    if rem > lock_cap_s then rem = lock_cap_s end
+                    if rem < 0.1 then rem = 0.1 end
+                    return rem
+                end
+                -- fall through to cast_point if remaining unavailable
+            end
+            if entry.cast_point and entry.cast_point > 0 then
+                local total = entry.cast_point + (entry.post_cast_delay or 0)
+                if total < 0.1 then total = 0.1 end
+                return total
+            end
+            if entry.speed_fallback and entry.speed_fallback > 0
+               and (entry.kind == "homing_charge" or entry.kind == "homing_carry"
+                    or entry.kind == "instant_blink") then
+                local d = _dist2d(caster, target)
+                local eta = d / entry.speed_fallback
+                if eta < 0.05 then eta = 0.05 end
+                return eta
+            end
+        end
+        if target and Entity.IsEntity and Entity.IsEntity(target)
+           and NPC.GetModifierRemaining then
+            local ok, v = pcall(NPC.GetModifierRemaining, target, mod_name)
+            if ok and type(v) == "number" and v > 0 then
+                local rem = v
+                if rem > lock_cap_s then rem = lock_cap_s end
+                if rem < 0.1 then rem = 0.1 end
+                return rem
+            end
+        end
+        return nil
+    end
+end
+
 return Defense

@@ -52,6 +52,13 @@ local function sg(name, field, fallback)
     return (type(v) == "number" and v) or fallback
 end
 
+-- v0.5.74: lib/target needed by ThreatData.ComputeArrivalTime (lifted from
+-- Lina.lua state.compute_arrival_time, which had Target as an upvalue from
+-- the hero script). Same lesson v0.5.61 taught with lib/escape: lib modules
+-- do NOT inherit hero-script upvalues; explicit require here keeps the
+-- function self-contained.
+local Target = require("lib.target")
+
 ----------------------------------------------------------------------------
 -- SAVE_KIND - every save item / ability classified by what it does
 ----------------------------------------------------------------------------
@@ -2070,6 +2077,112 @@ ThreatData.THREAT_ARRIVAL_TIMING = {
 -- shape as Lion/Sniper/Lina). The sync loop now writes back to ALL nine
 -- cp_default fields; no more "absent from catalog keep their literal"
 -- carve-out.
+
+---v0.5.74 lift from Lina.lua state.compute_arrival_time. Hero-agnostic;
+---takes the optional kv_lookup callback for the "kv_or_fallback" speed_source
+---branch (only Tusk Snowball uses it today). Heroes without a kv_lookup pass
+---nil. Returns nil for any threat without a THREAT_ARRIVAL_TIMING entry;
+---callers MUST fall back to legacy logic (the catalog is intentionally
+---narrow; ~42 entries cover the prep-time-save-relevant subset).
+---
+---Why catalog over stamped (live-reactive ETA): "We have to calculate
+---defensive item usage correctly when the threat is about to hit. Skills
+---have a charge timing and this should be on threat data." So timing
+---inputs live here as data; the math is one function call away for any
+---hero that wants it.
+---@param threat_mod string canonical modifier name
+---@param caster userdata enemy caster
+---@param target userdata defender (typically state.self_npc)
+---@param modifier_handle userdata|nil  Source 2 modifier handle (for KV reads)
+---@param kv_lookup fun(handle, key, fallback):any|nil  for kv_or_fallback speed
+---@return number? impact_t  seconds from now until the threat lands
+---@return userdata? impact_pos  where defensive AoE saves should be aimed
+---@return table? entry        the catalog row
+---@return number? speed       effective travel speed used in the computation
+function ThreatData.ComputeArrivalTime(threat_mod, caster, target, modifier_handle, kv_lookup)
+    if not (threat_mod and caster and target) then return nil end
+    if not (ThreatData.THREAT_ARRIVAL_TIMING and ThreatData.THREAT_ARRIVAL_TIMING[threat_mod]) then
+        return nil
+    end
+    if not (Entity.IsEntity and Entity.IsEntity(caster) and Entity.IsEntity(target)) then
+        return nil
+    end
+    if not (Target and Target.IsAlive and Target.IsAlive(caster) and Target.IsAlive(target)) then
+        return nil
+    end
+    local entry = ThreatData.THREAT_ARRIVAL_TIMING[threat_mod]
+
+    -- Derive effective travel speed.
+    local speed = entry.speed_fallback or 0
+    if entry.speed_source == "live_or_fallback" then
+        local live = NPC.GetMoveSpeed and NPC.GetMoveSpeed(caster)
+        if live and live > 0 then speed = live end
+    elseif entry.speed_source == "live_with_ramp" then
+        -- v0.5.50: ramp model for accelerating threats (Bara Charge per
+        -- Liquipedia: 1.5s linear wind-up from min to max MS bonus).
+        --   predicted_end = min(peak_speed_cap, live + ramp_accel * W_LEAD)
+        --   avg           = (live + predicted_end) / 2
+        -- Handles both early-charge (still ramping) and late-charge (already
+        -- at peak; peak_speed_cap clamps the over-extrapolation).
+        local W_LEAD = 1.12
+        local live   = NPC.GetMoveSpeed and NPC.GetMoveSpeed(caster) or 0
+        if live and live > 0 then
+            local accel = entry.ramp_accel or 0
+            local cap   = math.max(live, entry.peak_speed_cap or 0)
+            local predicted_end = math.min(cap, live + accel * W_LEAD)
+            speed = (live + predicted_end) / 2
+        end
+    elseif entry.speed_source == "kv_or_fallback" then
+        local abil
+        if modifier_handle and Modifier and Modifier.GetAbility then
+            local ok, a = pcall(Modifier.GetAbility, modifier_handle)
+            if ok then abil = a end
+        end
+        if abil and entry.kv_speed_key and kv_lookup then
+            speed = kv_lookup(abil, entry.kv_speed_key, speed)
+        end
+    elseif entry.speed_source == "instant" then
+        speed = 0
+    end
+
+    -- Travel time = dist(caster, target) / speed (0 for instant kinds).
+    local travel_t = 0
+    if speed > 0 then
+        local cpos = Entity.GetAbsOrigin(caster)
+        local tpos = Entity.GetAbsOrigin(target)
+        if cpos and tpos then
+            local dx = (cpos.x or 0) - (tpos.x or 0)
+            local dy = (cpos.y or 0) - (tpos.y or 0)
+            local d  = math.sqrt(dx * dx + dy * dy)
+            travel_t = d / speed
+        end
+    end
+
+    -- Cast point (optionally KV-driven).
+    local cast_pt = entry.cast_point or 0
+    if entry.kv_cast_point_key then
+        local abil
+        if modifier_handle and Modifier and Modifier.GetAbility then
+            local ok, a = pcall(Modifier.GetAbility, modifier_handle)
+            if ok then abil = a end
+        end
+        if abil and Ability.GetCastPoint then
+            local ok, v = pcall(Ability.GetCastPoint, abil, true)
+            if ok and type(v) == "number" and v > 0 then cast_pt = v end
+        end
+    end
+
+    local impact_t = cast_pt + travel_t + (entry.post_cast_delay or 0)
+
+    local impact_pos
+    if entry.impact_pos == "self" then
+        impact_pos = Entity.GetAbsOrigin(target)
+    elseif entry.impact_pos == "caster" then
+        impact_pos = Entity.GetAbsOrigin(caster)
+    end
+
+    return impact_t, impact_pos, entry, speed
+end
 for _mod, _t in pairs(ThreatData.THREAT_ARRIVAL_TIMING) do
     local _cp_entry = ThreatData.CAST_POINT_THREATS[_mod]
     if _cp_entry and _t.cast_point and _t.cast_point > 0 then
