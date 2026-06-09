@@ -530,4 +530,226 @@ function Escape.PostAirborneMoveTick(me, pending, cfg)
     return pending
 end
 
+----------------------------------------------------------------------------
+-- v0.5.76: PIKE-ADVANCE RISK ANALYSIS (offensive counterpart to ComputeSafeDest)
+----------------------------------------------------------------------------
+---
+---ComputeSafeDest answers "where should I escape TO" (away from threat).
+---ComputeAdvanceDest answers the inverse: "is it safe to push TOWARD this
+---enemy, and where do I land if I do". Built for Pike self-cast offensive
+---use (push 600u along facing-toward-target) but the geometry helper is
+---reusable for any directional push (Force Staff offensive, etc).
+---
+---Risk includes BOTH visible enemies near the landing AND fog enemies whose
+---probable-position cone (last-known-pos + max travel since last seen)
+---overlaps the landing. The fog component answers the user's specific ask:
+---"check up for possible heroes on the fog might be on PI last seen
+---enemies". Uses Hero.GetLastMaphackPos + Hero.GetLastVisibleTime per
+---API_GOTCHAS: nil GetLastVisibleTime means never-fogged (fresh visible),
+---treated as age=0.
+
+---Max enemy move speed cap for fog probable-radius growth. 700 = generous
+---ceiling for any hero with movement items / talents / haste. Going much
+---higher just makes the cone meaningless (after 10s any fog enemy could be
+---"anywhere within 7000u" which scores every landing identically). 30s cap
+---on age keeps the radius bounded even for very-stale-fog enemies.
+local PROBE_MAX_MS = 700
+local PROBE_MAX_AGE_S = 30
+
+---Enumerate enemy heroes whose CURRENT possible position could be within
+---`radius` of `pos`. Visible enemies always count (age = 0, probable_radius
+---= 0). Fogged enemies count when (probable_radius + dist(last_pos, pos))
+---<= radius, i.e. the probable-position circle reaches the engage zone.
+---
+---Returns a unified list so callers can score visible and fog with
+---different weights (see AdvanceRiskScore).
+---
+---@param me userdata defender / advancer entity (team-membership lookup only)
+---@param pos userdata position to score around
+---@param radius number engagement radius (e.g. 800 for Pike landing risk)
+---@param opts table|nil {max_ms=700, now=fn()->seconds}
+---@return integer visible_count
+---@return integer fog_count
+---@return table list of {entity, last_pos, age, probable_radius, visible}
+function Escape.NearbyEnemiesIncludingFog(me, pos, radius, opts)
+    if not (me and pos and radius) then return 0, 0, {} end
+    opts = opts or {}
+    local max_ms = opts.max_ms or PROBE_MAX_MS
+    local now_fn = opts.now or function() return GlobalVars.GetCurTime() end
+    local team   = Entity.GetTeamNum(me)
+    local out, seen = {}, {}
+    local v_cnt, f_cnt = 0, 0
+
+    -- Visible: Heroes.InRadius is the canonical proximity API. omitDormant
+    -- defaults true so we only see currently-visible enemies here.
+    local visible = Heroes.InRadius(pos, radius, team, Enum.TeamType.TEAM_ENEMY)
+    if visible then
+        for i = 1, #visible do
+            local e = visible[i]
+            if e and Target.IsAlive(e) and Target.NotIllusion(e) then
+                local ep = Entity.GetAbsOrigin(e)
+                if ep then
+                    seen[e] = true
+                    v_cnt = v_cnt + 1
+                    out[#out + 1] = {
+                        entity = e, last_pos = ep, age = 0,
+                        probable_radius = 0, visible = true,
+                    }
+                end
+            end
+        end
+    end
+
+    -- Fog: walk Heroes.GetAll() for enemies not in the visible set above.
+    -- Hero.GetLastMaphackPos returns nil for heroes never seen; Hero.Get-
+    -- LastVisibleTime returns nil for never-fogged (gotcha: nil = "fresh
+    -- visible", treat as age=0 per API_GOTCHAS).
+    if Heroes.GetAll then
+        local all = Heroes.GetAll() or {}
+        for i = 1, #all do
+            local e = all[i]
+            if e and not seen[e]
+               and Entity.GetTeamNum(e) ~= team
+               and Target.IsAlive(e) and Target.NotIllusion(e) then
+                local last_pos = Hero.GetLastMaphackPos
+                                 and Hero.GetLastMaphackPos(e) or nil
+                local last_t   = Hero.GetLastVisibleTime
+                                 and Hero.GetLastVisibleTime(e) or nil
+                local age = (last_t and (now_fn() - last_t)) or 0
+                if age < 0 then age = 0 end
+                if age > PROBE_MAX_AGE_S then age = PROBE_MAX_AGE_S end
+                local probable_radius = age * max_ms
+                if last_pos then
+                    local d = pos:Distance2D(last_pos)
+                    if d <= probable_radius + radius then
+                        f_cnt = f_cnt + 1
+                        out[#out + 1] = {
+                            entity = e, last_pos = last_pos,
+                            age = age, probable_radius = probable_radius,
+                            visible = false,
+                        }
+                    end
+                end
+            end
+        end
+    end
+
+    return v_cnt, f_cnt, out
+end
+
+---Composite risk score for a candidate landing position. Lower is safer;
+---0 = no enemies in or near the engage radius.
+---
+---Components:
+---  visible_score: for each visible enemy in engage_radius, add
+---    (1 - dist/engage_radius) * 30  -- max 30 per enemy at zero distance
+---  fog_score: 15 per fog enemy whose probable-position circle overlaps
+---    engage_radius (half-weighted -- uncertainty discount).
+---
+---Default engage_radius = 800u (typical Pike-landing follow-up range).
+---Suggested threshold: <= 30 safe-to-advance, 30-60 risky-but-survivable,
+--->60 abort. Caller picks the threshold; lib only scores.
+---
+---@param me userdata
+---@param landing userdata candidate position
+---@param opts table|nil {engage_radius=800, max_ms=700, now=fn}
+---@return number score
+---@return table breakdown {visible_score, fog_score, visible_count, fog_count, engage_radius, enemies}
+function Escape.AdvanceRiskScore(me, landing, opts)
+    if not (me and landing) then
+        return math.huge, { visible_score = 0, fog_score = 0,
+                            visible_count = 0, fog_count = 0,
+                            engage_radius = 0, enemies = {} }
+    end
+    opts = opts or {}
+    local engage_radius = opts.engage_radius or 800
+    local v_cnt, f_cnt, list =
+        Escape.NearbyEnemiesIncludingFog(me, landing, engage_radius, opts)
+    local visible_score, fog_score = 0, 0
+    for i = 1, #list do
+        local e = list[i]
+        if e.visible then
+            local d = landing:Distance2D(e.last_pos)
+            local frac = d / engage_radius
+            if frac > 1 then frac = 1 end
+            visible_score = visible_score + (1 - frac) * 30
+        else
+            fog_score = fog_score + 15
+        end
+    end
+    return visible_score + fog_score, {
+        visible_score = visible_score,
+        fog_score     = fog_score,
+        visible_count = v_cnt,
+        fog_count     = f_cnt,
+        engage_radius = engage_radius,
+        enemies       = list,
+    }
+end
+
+---Deterministic Pike self-cast landing for an OFFENSIVE advance: Lina
+---fires Pike facing toward target_pos, lands push_dist units along that
+---facing. Geometry is the same for any directional self-push item (Force
+---Staff offensive, future displacement items). Pike push_dist is 600u.
+---
+---Returns nil when me_pos == target_pos (zero direction; can't pick a
+---facing).
+---
+---@param me_pos userdata defender position
+---@param target_pos userdata target position to advance toward
+---@param push_dist number distance the item will push (Pike = 600)
+---@return userdata|nil landing
+function Escape.PikeAdvanceLanding(me_pos, target_pos, push_dist)
+    if not (me_pos and target_pos and push_dist and push_dist > 0) then
+        return nil
+    end
+    local diff = target_pos - me_pos
+    if diff:Length2DSqr() < 1 then return nil end
+    local dir = diff:Normalized()
+    return me_pos + dir * push_dist
+end
+
+---Pike-advance pick: compute landing for a self-cast Pike toward `target`,
+---score risk, return (landing, score, breakdown) for caller to decide
+---fire / skip. Returns (nil, nil, nil) when target invalid or zero
+---direction. Lib does NOT issue any orders -- this is a pure decision-
+---support primitive.
+---
+---target may be a hero entity (userdata, IsAlive-checked) or a Vector
+---world position; the function dispatches accordingly.
+---
+---Pairs naturally with the AdvanceRiskScore threshold check:
+---  local landing, score, brk = Escape.ComputeAdvanceDest(me, hero, 600)
+---  if landing and score <= 30 then  -- caller-chosen threshold
+---      fire_pike_self()
+---  end
+---
+---@param me userdata
+---@param target userdata|userdata entity (hero) OR Vector position
+---@param push_dist number typically 600 for Pike
+---@param opts table|nil see AdvanceRiskScore
+---@return userdata|nil landing
+---@return number|nil score
+---@return table|nil breakdown
+function Escape.ComputeAdvanceDest(me, target, push_dist, opts)
+    if not (me and target and push_dist) then return nil, nil, nil end
+    local me_pos = Entity.GetAbsOrigin(me)
+    if not me_pos then return nil, nil, nil end
+    local target_pos
+    if type(target) == "userdata"
+       and Entity.IsEntity and Entity.IsEntity(target) then
+        if not (Target.IsAlive and Target.IsAlive(target)) then
+            return nil, nil, nil
+        end
+        target_pos = Entity.GetAbsOrigin(target)
+    else
+        target_pos = target
+    end
+    if not target_pos then return nil, nil, nil end
+    local landing = Escape.PikeAdvanceLanding(me_pos, target_pos, push_dist)
+    if not landing then return nil, nil, nil end
+    local score, breakdown = Escape.AdvanceRiskScore(me, landing, opts)
+    return landing, score, breakdown
+end
+
 return Escape
