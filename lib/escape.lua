@@ -556,10 +556,91 @@ end
 local PROBE_MAX_MS = 700
 local PROBE_MAX_AGE_S = 30
 
+---v0.5.77: shared per-call snapshot of ALL enemy heroes (visible + fog).
+---Extracted from NearbyEnemiesIncludingFog so multiple consumers (Pike-
+---advance risk, gank-inbound check, rotation tracker, initiator probe,
+---safest-spot grid picker) reuse one scan instead of each running their
+---own. Callers can pass opts.snapshot to consumer functions to share a
+---snapshot across calls within a frame.
+---
+---For visible enemies: pos = Entity.GetAbsOrigin (true current), age = 0,
+---probable_radius = 0, visible = true.
+---
+---For fog enemies: pos = Hero.GetLastMaphackPos (last known), age =
+---now - Hero.GetLastVisibleTime (clamped to [0, 30s]), probable_radius =
+---age * max_ms (700 cap), visible = false. last_pos_known = false when
+---Hero.GetLastMaphackPos returns nil (never-seen hero; the entry is
+---excluded since we have no position to reason about).
+---
+---API gotcha (per API_GOTCHAS): Hero.GetLastVisibleTime returns nil for
+---never-fogged heroes (demo bots, freshly spawned). nil is NOT a veto;
+---treated as age = 0 "fresh visible".
+---
+---Dormant check: Entity.IsDormant(e) is the canonical "currently not
+---visible to our team" predicate. Falls back to "no entry in
+---Heroes.InRadius's omitDormant=true scan" if Entity.IsDormant absent.
+---
+---@param me userdata
+---@param opts table|nil {max_ms=700, now=fn()->seconds}
+---@return table snapshot {t = number, heroes = {{entity, pos, age, probable_radius, visible}}}
+function Escape.FogSnapshot(me, opts)
+    opts = opts or {}
+    local max_ms = opts.max_ms or PROBE_MAX_MS
+    local now_fn = opts.now or function() return GlobalVars.GetCurTime() end
+    local t = now_fn()
+    if not me then return { t = t, heroes = {} } end
+    local team = Entity.GetTeamNum(me)
+    local heroes = {}
+    if not Heroes.GetAll then return { t = t, heroes = heroes } end
+    local all = Heroes.GetAll() or {}
+    for i = 1, #all do
+        local e = all[i]
+        if e and Entity.GetTeamNum(e) ~= team
+           and Target.IsAlive(e) and Target.NotIllusion(e) then
+            local visible
+            if Entity.IsDormant then
+                visible = not Entity.IsDormant(e)
+            else
+                visible = true  -- conservative: assume visible if API missing
+            end
+            local pos
+            if visible then
+                pos = Entity.GetAbsOrigin(e)
+            else
+                pos = Hero.GetLastMaphackPos and Hero.GetLastMaphackPos(e) or nil
+            end
+            if pos then
+                local age, probable_radius = 0, 0
+                if not visible then
+                    local last_t = Hero.GetLastVisibleTime
+                                   and Hero.GetLastVisibleTime(e) or nil
+                    age = (last_t and (t - last_t)) or 0
+                    if age < 0 then age = 0 end
+                    if age > PROBE_MAX_AGE_S then age = PROBE_MAX_AGE_S end
+                    probable_radius = age * max_ms
+                end
+                heroes[#heroes + 1] = {
+                    entity = e,
+                    pos = pos,
+                    age = age,
+                    probable_radius = probable_radius,
+                    visible = visible,
+                }
+            end
+        end
+    end
+    return { t = t, heroes = heroes }
+end
+
 ---Enumerate enemy heroes whose CURRENT possible position could be within
 ---`radius` of `pos`. Visible enemies always count (age = 0, probable_radius
 ---= 0). Fogged enemies count when (probable_radius + dist(last_pos, pos))
 ---<= radius, i.e. the probable-position circle reaches the engage zone.
+---
+---v0.5.77 refactor: now consumes Escape.FogSnapshot. Pass
+---opts.snapshot to share a snapshot across multiple calls in one frame
+---(SafestSpotNear uses this to run 9 grid samples against one scan).
+---External API unchanged.
 ---
 ---Returns a unified list so callers can score visible and fog with
 ---different weights (see AdvanceRiskScore).
@@ -567,73 +648,37 @@ local PROBE_MAX_AGE_S = 30
 ---@param me userdata defender / advancer entity (team-membership lookup only)
 ---@param pos userdata position to score around
 ---@param radius number engagement radius (e.g. 800 for Pike landing risk)
----@param opts table|nil {max_ms=700, now=fn()->seconds}
+---@param opts table|nil {max_ms=700, now=fn, snapshot=table}
 ---@return integer visible_count
 ---@return integer fog_count
 ---@return table list of {entity, last_pos, age, probable_radius, visible}
 function Escape.NearbyEnemiesIncludingFog(me, pos, radius, opts)
     if not (me and pos and radius) then return 0, 0, {} end
     opts = opts or {}
-    local max_ms = opts.max_ms or PROBE_MAX_MS
-    local now_fn = opts.now or function() return GlobalVars.GetCurTime() end
-    local team   = Entity.GetTeamNum(me)
-    local out, seen = {}, {}
-    local v_cnt, f_cnt = 0, 0
-
-    -- Visible: Heroes.InRadius is the canonical proximity API. omitDormant
-    -- defaults true so we only see currently-visible enemies here.
-    local visible = Heroes.InRadius(pos, radius, team, Enum.TeamType.TEAM_ENEMY)
-    if visible then
-        for i = 1, #visible do
-            local e = visible[i]
-            if e and Target.IsAlive(e) and Target.NotIllusion(e) then
-                local ep = Entity.GetAbsOrigin(e)
-                if ep then
-                    seen[e] = true
-                    v_cnt = v_cnt + 1
-                    out[#out + 1] = {
-                        entity = e, last_pos = ep, age = 0,
-                        probable_radius = 0, visible = true,
-                    }
-                end
+    local snap = opts.snapshot or Escape.FogSnapshot(me, opts)
+    local out, v_cnt, f_cnt = {}, 0, 0
+    for i = 1, #snap.heroes do
+        local h = snap.heroes[i]
+        local d = pos:Distance2D(h.pos)
+        if h.visible then
+            if d <= radius then
+                v_cnt = v_cnt + 1
+                out[#out + 1] = {
+                    entity = h.entity, last_pos = h.pos, age = 0,
+                    probable_radius = 0, visible = true,
+                }
+            end
+        else
+            if d <= h.probable_radius + radius then
+                f_cnt = f_cnt + 1
+                out[#out + 1] = {
+                    entity = h.entity, last_pos = h.pos,
+                    age = h.age, probable_radius = h.probable_radius,
+                    visible = false,
+                }
             end
         end
     end
-
-    -- Fog: walk Heroes.GetAll() for enemies not in the visible set above.
-    -- Hero.GetLastMaphackPos returns nil for heroes never seen; Hero.Get-
-    -- LastVisibleTime returns nil for never-fogged (gotcha: nil = "fresh
-    -- visible", treat as age=0 per API_GOTCHAS).
-    if Heroes.GetAll then
-        local all = Heroes.GetAll() or {}
-        for i = 1, #all do
-            local e = all[i]
-            if e and not seen[e]
-               and Entity.GetTeamNum(e) ~= team
-               and Target.IsAlive(e) and Target.NotIllusion(e) then
-                local last_pos = Hero.GetLastMaphackPos
-                                 and Hero.GetLastMaphackPos(e) or nil
-                local last_t   = Hero.GetLastVisibleTime
-                                 and Hero.GetLastVisibleTime(e) or nil
-                local age = (last_t and (now_fn() - last_t)) or 0
-                if age < 0 then age = 0 end
-                if age > PROBE_MAX_AGE_S then age = PROBE_MAX_AGE_S end
-                local probable_radius = age * max_ms
-                if last_pos then
-                    local d = pos:Distance2D(last_pos)
-                    if d <= probable_radius + radius then
-                        f_cnt = f_cnt + 1
-                        out[#out + 1] = {
-                            entity = e, last_pos = last_pos,
-                            age = age, probable_radius = probable_radius,
-                            visible = false,
-                        }
-                    end
-                end
-            end
-        end
-    end
-
     return v_cnt, f_cnt, out
 end
 
@@ -663,6 +708,9 @@ function Escape.AdvanceRiskScore(me, landing, opts)
     end
     opts = opts or {}
     local engage_radius = opts.engage_radius or 800
+    -- v0.5.77: opts.snapshot propagates through so SafestSpotNear can
+    -- run 9 grid samples against one shared snapshot. If not provided,
+    -- NearbyEnemiesIncludingFog computes its own.
     local v_cnt, f_cnt, list =
         Escape.NearbyEnemiesIncludingFog(me, landing, engage_radius, opts)
     local visible_score, fog_score = 0, 0
@@ -750,6 +798,219 @@ function Escape.ComputeAdvanceDest(me, target, push_dist, opts)
     if not landing then return nil, nil, nil end
     local score, breakdown = Escape.AdvanceRiskScore(me, landing, opts)
     return landing, score, breakdown
+end
+
+----------------------------------------------------------------------------
+-- v0.5.77: FOG-AWARE CONSUMERS (gank / rotation / initiator / safest-spot)
+----------------------------------------------------------------------------
+---
+---All four consumers read from FogSnapshot. Caller may pass opts.snapshot
+---to share one scan across calls. None of them issue orders -- pure
+---decision support. Hero scripts thin-alias these via state.* for HUD /
+---combo gates / future auto-actions.
+
+---List enemy heroes who could be at `pos` within `eta_s` seconds.
+---Each entry: time_to_reach computed as:
+---  visible: dist / max_ms                       (walks straight at max speed)
+---  fog:     max(0, dist / max_ms - age)         (already moved closer for `age` seconds worst-case)
+---
+---Sorted by eta_seconds ascending so summary.soonest_eta = result.gankers[1].eta_seconds.
+---
+---Default opts: max_ms = 700 (matches FogSnapshot). Caller-overridable.
+---
+---@param me userdata
+---@param pos userdata position to evaluate (typically me's position or a candidate destination)
+---@param eta_s number arrival horizon in seconds (gank-window)
+---@param opts table|nil {max_ms=700, now=fn, snapshot=table}
+---@return table result {gankers={{entity, eta_seconds, dist, visibility, age}}, summary={count, soonest_eta, eta_s, max_ms}}
+function Escape.PossibleGankers(me, pos, eta_s, opts)
+    if not (me and pos and eta_s) then
+        return { gankers = {}, summary = { count = 0,
+                 soonest_eta = math.huge, eta_s = eta_s or 0,
+                 max_ms = (opts and opts.max_ms) or PROBE_MAX_MS } }
+    end
+    opts = opts or {}
+    local max_ms = opts.max_ms or PROBE_MAX_MS
+    local snap = opts.snapshot or Escape.FogSnapshot(me, opts)
+    local gankers = {}
+    for i = 1, #snap.heroes do
+        local h = snap.heroes[i]
+        local d = pos:Distance2D(h.pos)
+        local time_to_reach
+        if h.visible then
+            time_to_reach = d / max_ms
+        else
+            time_to_reach = d / max_ms - h.age
+            if time_to_reach < 0 then time_to_reach = 0 end
+        end
+        if time_to_reach <= eta_s then
+            gankers[#gankers + 1] = {
+                entity      = h.entity,
+                eta_seconds = time_to_reach,
+                dist        = d,
+                visibility  = h.visible and "visible" or "fog",
+                age         = h.age,
+            }
+        end
+    end
+    table.sort(gankers, function(a, b) return a.eta_seconds < b.eta_seconds end)
+    local soonest = (gankers[1] and gankers[1].eta_seconds) or math.huge
+    return {
+        gankers = gankers,
+        summary = {
+            count       = #gankers,
+            soonest_eta = soonest,
+            eta_s       = eta_s,
+            max_ms      = max_ms,
+        },
+    }
+end
+
+---Convenience predicate: are at least `min_count` enemies arrivable at
+---`pos` within `eta_s` seconds. Default min_count = 2 (common "2-man gank"
+---signal). Returns the boolean + the ganker list so the caller can read
+---the breakdown for HUD / tlog purposes.
+---
+---@param me userdata
+---@param pos userdata
+---@param eta_s number
+---@param min_count integer|nil default 2
+---@param opts table|nil same as PossibleGankers
+---@return boolean imminent
+---@return table gankers list (sorted by eta)
+function Escape.GankImminent(me, pos, eta_s, min_count, opts)
+    local result = Escape.PossibleGankers(me, pos, eta_s, opts)
+    return result.summary.count >= (min_count or 2), result.gankers
+end
+
+---Rotation tracker: list of enemy heroes who have been off-minimap for
+---at least `min_age_s` seconds. Returns {entity, age, last_pos} sorted
+---by age descending (longest-missing first). Useful for "mid is missing
+---5s, defend tier-2" heuristics + HUD chips.
+---
+---Default min_age_s = 5.0. Visible enemies excluded (age = 0).
+---
+---@param me userdata
+---@param min_age_s number|nil default 5.0
+---@param opts table|nil {max_ms=700, now=fn, snapshot=table}
+---@return table missing list {{entity, age, last_pos}} sorted by age desc
+function Escape.MissingFromMap(me, min_age_s, opts)
+    if not me then return {} end
+    opts = opts or {}
+    local threshold = min_age_s or 5.0
+    local snap = opts.snapshot or Escape.FogSnapshot(me, opts)
+    local missing = {}
+    for i = 1, #snap.heroes do
+        local h = snap.heroes[i]
+        if (not h.visible) and h.age >= threshold then
+            missing[#missing + 1] = {
+                entity   = h.entity,
+                age      = h.age,
+                last_pos = h.pos,
+            }
+        end
+    end
+    table.sort(missing, function(a, b) return a.age > b.age end)
+    return missing
+end
+
+---Initiator-accounted-for predicate: given a list of enemy unit names
+---(canonical npc_dota_hero_*), report which are currently VISIBLE and
+---which are missing (fog or absent from match). Used to gate combo
+---decisions ("is Magnus visible? if not, defer initiation"). Tiny lib
+---helper -- main cost is NPC.GetUnitName per hero in the snapshot.
+---
+---Returns:
+---  {accounted = {[name] = true/false},
+---   missing   = {names of those NOT visible},
+---   visible   = {names of those visible},
+---   unmatched = {names not present in the match at all}}
+---
+---@param me userdata
+---@param initiator_names table list of npc_dota_hero_* names
+---@param opts table|nil {snapshot=table}
+---@return table result
+function Escape.InitiatorAccountedFor(me, initiator_names, opts)
+    if not (me and initiator_names) then
+        return { accounted = {}, missing = {}, visible = {}, unmatched = {} }
+    end
+    opts = opts or {}
+    local snap = opts.snapshot or Escape.FogSnapshot(me, opts)
+    local by_name = {}
+    for i = 1, #snap.heroes do
+        local h = snap.heroes[i]
+        if NPC.GetUnitName then
+            local name = NPC.GetUnitName(h.entity)
+            if name then by_name[name] = h end
+        end
+    end
+    local accounted, missing, visible, unmatched = {}, {}, {}, {}
+    for i = 1, #initiator_names do
+        local n = initiator_names[i]
+        local h = by_name[n]
+        if h then
+            if h.visible then
+                accounted[n] = true
+                visible[#visible + 1] = n
+            else
+                accounted[n] = false
+                missing[#missing + 1] = n
+            end
+        else
+            accounted[n] = false
+            unmatched[#unmatched + 1] = n
+        end
+    end
+    return {
+        accounted = accounted,
+        missing   = missing,
+        visible   = visible,
+        unmatched = unmatched,
+    }
+end
+
+---Safest-spot grid picker: sample me_pos + 8 cardinal-and-diagonal points
+---on a circle of `radius`, score each via AdvanceRiskScore, return the
+---position with the lowest score. Shares one FogSnapshot across all 9
+---scores (passes opts.snapshot through).
+---
+---Useful for retreat / repositioning decisions where the brain wants
+---"where near me is least dangerous given current fog state". Subsumes a
+---simpler form of ComputeSafeDest (which picks a single direction); this
+---is grid-search style.
+---
+---@param me userdata
+---@param radius number sample circle radius (typical 600-900)
+---@param opts table|nil same as AdvanceRiskScore opts (engage_radius, max_ms, now)
+---@return userdata|nil best_pos
+---@return number best_score
+function Escape.SafestSpotNear(me, radius, opts)
+    if not (me and radius) then return nil, math.huge end
+    local me_pos = Entity.GetAbsOrigin(me)
+    if not me_pos then return nil, math.huge end
+    opts = opts or {}
+    -- Single snapshot used for all 9 scores (avoid 9x Heroes.GetAll scans).
+    local sub_opts = {}
+    for k, v in pairs(opts) do sub_opts[k] = v end
+    sub_opts.snapshot = sub_opts.snapshot or Escape.FogSnapshot(me, opts)
+    local best_pos, best_score = me_pos, Escape.AdvanceRiskScore(me, me_pos, sub_opts)
+    for deg = 0, 315, 45 do
+        local rad = math.rad(deg)
+        local p = Vector(me_pos.x + math.cos(rad) * radius,
+                          me_pos.y + math.sin(rad) * radius,
+                          me_pos.z)
+        local traversable = true
+        if GridNav and GridNav.IsTraversableFromTo then
+            traversable = GridNav.IsTraversableFromTo(me_pos, p)
+        end
+        if traversable then
+            local s = Escape.AdvanceRiskScore(me, p, sub_opts)
+            if s < best_score then
+                best_pos, best_score = p, s
+            end
+        end
+    end
+    return best_pos, best_score
 end
 
 return Escape
