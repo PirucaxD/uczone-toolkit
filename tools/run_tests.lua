@@ -318,6 +318,55 @@ describe("menu - panel builder", function()
     end)
 end)
 
+local Farm = require("lib.farm")
+
+describe("lib/farm , pure geometry (v0.5.82)", function()
+    local function u(x, y, hp) return { pos = { x = x, y = y, z = 0 }, hp = hp or 100 } end
+    local origin = { x = 0, y = 0, z = 0 }
+
+    it("WorthCasting respects min_count", function()
+        assert_true(Farm.WorthCasting(3, 3))
+        assert_false(Farm.WorthCasting(2, 3))
+        assert_true(Farm.WorthCasting(1))
+        assert_false(Farm.WorthCasting(0, 1))
+    end)
+
+    it("CountInLine counts units inside the line band", function()
+        local units = { u(100, 0), u(500, 50), u(500, 300), u(-100, 0), u(1200, 0) }
+        local n = Farm.CountInLine(origin, { x = 1, y = 0, z = 0 }, 1000, 100, units)
+        assert_eq(n, 2, "expected 2 in-line")
+    end)
+
+    it("BestLineAim picks the densest direction", function()
+        local units = { u(200, 0), u(400, 0), u(600, 0), u(0, 400) }
+        local aim, hit = Farm.BestLineAim(origin, units, 1075, 110)
+        assert_eq(hit, 3, "expected 3 hits on the +x line")
+        assert_true(aim ~= nil and aim.x > aim.y, "aim should point +x")
+    end)
+
+    it("BestLineAim tie-break prefers the closer pack (v0.5.81)", function()
+        local near = u(300, 0, 100)
+        local far  = u(0, 900, 100)
+        local aim, hit = Farm.BestLineAim(origin, { far, near }, 1075, 110)
+        assert_eq(hit, 1)
+        assert_true(aim.x > aim.y, "tie-break should favor the nearer (+x) unit")
+    end)
+
+    it("BestPointAim finds the densest cluster center", function()
+        local units = { u(0, 0), u(50, 0), u(60, 30), u(1000, 1000) }
+        local center, hit = Farm.BestPointAim(units, 250)
+        assert_eq(hit, 3, "cluster of 3 within 250")
+        assert_true(center ~= nil)
+    end)
+
+    it("empty / degenerate inputs are safe", function()
+        local aim, h1 = Farm.BestLineAim(origin, {}, 1000, 100)
+        assert_true(aim == nil and h1 == 0)
+        local c, h2 = Farm.BestPointAim({}, 250)
+        assert_true(c == nil and h2 == 0)
+    end)
+end)
+
 ----------------------------------------------------------------------------
 -- REPORT
 ----------------------------------------------------------------------------
