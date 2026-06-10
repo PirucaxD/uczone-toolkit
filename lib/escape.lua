@@ -133,8 +133,14 @@ end
 ---@param me userdata defender entity
 ---@param dest_pos userdata candidate landing
 ---@param threat_caster_hint userdata|nil specific threat caster, if known
+---@param danger_now number|nil v0.5.83: precomputed DangerAtPos(me, me_pos),
+---       supplied by PickDir once across all candidates so the current-spot
+---       scan is not repeated per candidate. Falls back to a local scan if nil.
 ---@return userdata|nil dest_pos if safe, nil otherwise
-function Escape.SafePushDestination(me, dest_pos, threat_caster_hint)
+---@return number|nil d_land v0.5.83: the landing danger computed by the
+---       centroid branch, so PickDir can rank without re-scanning. nil on the
+---       threat-hint branch (which does no danger scan).
+function Escape.SafePushDestination(me, dest_pos, threat_caster_hint, danger_now)
     if not me or not dest_pos then return nil end
     local me_pos = Entity.GetAbsOrigin(me)
     if not me_pos then return nil end
@@ -147,13 +153,19 @@ function Escape.SafePushDestination(me, dest_pos, threat_caster_hint)
         local d_now  = me_pos:DistanceSqr2D(cp)
         local d_dest = dest_pos:DistanceSqr2D(cp)
         if d_dest <= d_now then return nil end
-        return dest_pos
+        return dest_pos   -- threat-hint branch does no danger scan; d_land = nil
     end
 
-    if Escape.DangerAtPos(me, dest_pos) > Escape.DangerAtPos(me, me_pos) + 12 then
+    -- v0.5.83: compute the landing danger ONCE and return it so PickDir reuses
+    -- it for ranking (it was re-scanning DangerAtPos(landing) a second time per
+    -- candidate). danger_now (current-spot danger) is hoisted by the caller
+    -- across all candidates; fall back to a local scan when not supplied.
+    local d_land = Escape.DangerAtPos(me, dest_pos)
+    local d_cur  = danger_now or Escape.DangerAtPos(me, me_pos)
+    if d_land > d_cur + 12 then
         return nil
     end
-    return dest_pos
+    return dest_pos, d_land
 end
 
 ---7-angle danger-aware escape destination picker. Tries angles
@@ -186,6 +198,13 @@ function Escape.PickDir(me, me_pos, toward_threat, push_distance,
     if not me or not me_pos or not toward_threat or not push_distance then
         return nil, nil
     end
+    -- v0.5.83: hoist the current-spot danger once (SafePushDestination was
+    -- recomputing DangerAtPos(me_pos) for every candidate) and reuse the
+    -- landing danger it now returns (was a 2nd DangerAtPos(landing) scan per
+    -- candidate). Drops the no-hint path from ~21 to ~8 DangerAtPos scans for
+    -- 7 candidates; threat-hint path is bit-identical (it returns no d_land,
+    -- so ranking there still uses a direct DangerAtPos scan, as before).
+    local danger_now = Escape.DangerAtPos(me, me_pos)
     local best_dir, best_landing, best_danger
     for _, deg in ipairs({ 0, -35, 35, -65, 65, -90, 90 }) do
         local rad = math.rad(deg)
@@ -194,9 +213,10 @@ function Escape.PickDir(me, me_pos, toward_threat, push_distance,
         local ry = toward_threat.x * s + toward_threat.y * c
         local esc_dir = Vector(-rx, -ry, 0)
         local landing = me_pos + esc_dir * push_distance
-        if Escape.SafePushDestination(me, landing, threat_caster_hint)
-           and (not filter_fn or filter_fn(esc_dir, landing)) then
-            local dng = Escape.DangerAtPos(me, landing)
+        local safe, d_land = Escape.SafePushDestination(me, landing,
+                                                         threat_caster_hint, danger_now)
+        if safe and (not filter_fn or filter_fn(esc_dir, landing)) then
+            local dng = d_land or Escape.DangerAtPos(me, landing)
             if not best_danger or dng < best_danger then
                 best_danger, best_dir, best_landing = dng, esc_dir, landing
             end

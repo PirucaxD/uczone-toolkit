@@ -185,6 +185,20 @@ end
 ---@return table chain, boolean is_authoritative
 function Dispatcher:ResolveSaveOrder(threat_mod, category_hint, ability_name, ctx)
     local c = self.cfg
+    -- v0.5.83 perf: build the per-pick level-3 diagnostic table only when
+    -- level-3 logging is actually live. ResolveSaveOrder runs per armed threat
+    -- during an approach window; at default verbosity the kv-literal at each
+    -- return branch was a guaranteed wasted alloc (c.tlog only drops it by level
+    -- AFTER it is built). diag_on defaults TRUE when cfg.tlog_level is absent, so
+    -- a hero that does not register the accessor (e.g. Sniper) keeps the exact
+    -- prior always-build behaviour. pick_log centralizes the gated emit.
+    local diag_on = (c.tlog_level == nil) or (c.tlog_level() >= 3)
+    local function pick_log(source, head)
+        if diag_on then
+            c.tlog(3, "resolve_save_order_pick",
+                   { mod = threat_mod, source = source, head = head })
+        end
+    end
     -- v0.5.13 E4 (HI-3 / PE04-OVERRIDE-WORKS): emit a single diagnostic tlog at
     -- each return point so operators can read the resolved chain HEAD directly
     -- from the log. PE04-OVERRIDE-WORKS confirmed LINA_SAVE_OVERRIDES is being
@@ -198,14 +212,14 @@ function Dispatcher:ResolveSaveOrder(threat_mod, category_hint, ability_name, ct
     if ability_name then
         local ao = c.anim_save_overrides[ability_name]
         if ao then
-            c.tlog(3, "resolve_save_order_pick", { mod = threat_mod, source = "anim_override", head = ao[1] or "-" })
+            pick_log("anim_override", ao[1] or "-")
             picked, authoritative = ao, true
         end
     end
     if not picked and threat_mod then
         local hero = c.hero_save_overrides[threat_mod]
         if hero then
-            c.tlog(3, "resolve_save_order_pick", { mod = threat_mod, source = "hero_override", head = hero[1] or "-" })
+            pick_log("hero_override", hero[1] or "-")
             picked, authoritative = hero, true
         end
     end
@@ -218,25 +232,25 @@ function Dispatcher:ResolveSaveOrder(threat_mod, category_hint, ability_name, ct
         -- that previously fell through silently.
         local td = c.patched_recommended[threat_mod]
         if td and #td > 0 then
-            c.tlog(3, "resolve_save_order_pick", { mod = threat_mod, source = "lib_patched", head = td[1] or "-" })
+            pick_log("lib_patched", td[1] or "-")
             picked, authoritative = td, false
         elseif td then
-            c.tlog(3, "resolve_save_order_pick", { mod = threat_mod, source = "lib_patched_empty", head = "-" })
+            pick_log("lib_patched_empty", "-")
         end
         if not picked then
             local category = c.TD.CategoryOf and c.TD.CategoryOf(threat_mod) or nil
             if category and c.category_chains[category] then
-                c.tlog(3, "resolve_save_order_pick", { mod = threat_mod, source = "category_default", head = c.category_chains[category][1] or "-" })
+                pick_log("category_default", c.category_chains[category][1] or "-")
                 picked, authoritative = c.category_chains[category], false
             end
         end
     end
     if not picked and category_hint and c.category_chains[category_hint] then
-        c.tlog(3, "resolve_save_order_pick", { mod = threat_mod, source = "category_hint", head = c.category_chains[category_hint][1] or "-" })
+        pick_log("category_hint", c.category_chains[category_hint][1] or "-")
         picked, authoritative = c.category_chains[category_hint], false
     end
     if not picked then
-        c.tlog(3, "resolve_save_order_pick", { mod = threat_mod, source = "default_chain", head = c.default_chain[1] or "-" })
+        pick_log("default_chain", c.default_chain[1] or "-")
         picked, authoritative = c.default_chain, false
     end
 
