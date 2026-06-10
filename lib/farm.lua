@@ -26,7 +26,7 @@ local Farm = {}
 ---@return integer count
 ---@return table hits subset of `units`
 local function _count_in_line(ox, oy, dx, dy, length, half_width, units)
-    local n, hits = 0, {}
+    local n, hits, sumt = 0, {}, 0
     local hw2 = half_width * half_width
     for i = 1, #units do
         local p = units[i].pos
@@ -40,11 +40,13 @@ local function _count_in_line(ox, oy, dx, dy, length, half_width, units)
                 if pd2 <= hw2 then
                     n = n + 1
                     hits[#hits + 1] = units[i]
+                    sumt = sumt + t              -- accumulate projection for the
+                                                 -- closer-pack tie-break (v0.5.81)
                 end
             end
         end
     end
-    return n, hits
+    return n, hits, sumt
 end
 
 ---Sum of hp over a unit list (tie-break weight). Missing hp counts as 0.
@@ -93,7 +95,8 @@ function Farm.BestLineAim(origin, units, length, half_width, opts)
         return nil, 0, {}
     end
     local ox, oy, oz = origin.x, origin.y, origin.z
-    local best_n, best_hp, best_dx, best_dy, best_hits = 0, -1, nil, nil, {}
+    local best_n, best_hp, best_proj = 0, -1, nil
+    local best_dx, best_dy, best_hits = nil, nil, {}
     for i = 1, #units do
         local p = units[i].pos
         if p then
@@ -101,12 +104,19 @@ function Farm.BestLineAim(origin, units, length, half_width, opts)
             local len = math.sqrt(dx * dx + dy * dy)
             if len > 1 then
                 dx, dy = dx / len, dy / len
-                local n, hits = _count_in_line(ox, oy, dx, dy, length,
-                                               half_width, units)
+                local n, hits, sumt = _count_in_line(ox, oy, dx, dy, length,
+                                                     half_width, units)
                 if n > 0 then
                     local hp = _sum_hp(hits)
-                    if n > best_n or (n == best_n and hp > best_hp) then
-                        best_n, best_hp = n, hp
+                    local mean_proj = sumt / n   -- closer pack = lower mean t
+                    -- Tie-break ladder: hit count, then summed hp, then nearer
+                    -- cluster (shorter mean projection) so a denser/closer pack
+                    -- wins over an equally-scoring marginal far one (v0.5.81).
+                    if n > best_n
+                       or (n == best_n and hp > best_hp)
+                       or (n == best_n and hp == best_hp
+                           and (best_proj == nil or mean_proj < best_proj)) then
+                        best_n, best_hp, best_proj = n, hp, mean_proj
                         best_dx, best_dy, best_hits = dx, dy, hits
                     end
                 end

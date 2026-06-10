@@ -1,5 +1,5 @@
 ---@meta
----lib/target.lua , composable predicate helpers.
+---lib/target.lua - composable predicate helpers.
 ---
 ---Per project plan: there is no `Target.Pick()`. Heroes compose these
 ---predicates inline because target-picking is per-hero (Tier 3) and
@@ -192,7 +192,7 @@ end
 ----------------------------------------------------------------------------
 
 ---Will `entity` be invulnerable (or out-of-game) at any point in the next
----`ms` milliseconds? v1 reads state durations only , any currently-active
+---`ms` milliseconds? v1 reads state durations only - any currently-active
 ---invuln state means the answer is yes for any positive window. Cast-window
 ---prediction (self-cast Eul / Manta dispel-into-invuln) is a Tier 2 hook
 ---(`lib/timing.lua`) and not folded in here.
@@ -238,14 +238,17 @@ function Target.EffectiveHpVs(target, source, damage_type)
 
     if damage_type == DT.DAMAGE_TYPE_PHYSICAL then
         if NPC.HasState(target, MS.MODIFIER_STATE_ATTACK_IMMUNE) then return INF end
-        local mult = NPC.GetArmorDamageMultiplier(target)
+        -- Presence-guard like lib/damage.lua + Sniper: the multiplier getters
+        -- are possibly-absent on some builds; a bare call throws and breaks the
+        -- kill-confirm hot path. Fallback 1.0 = no armor adjustment.
+        local mult = (NPC.GetArmorDamageMultiplier and NPC.GetArmorDamageMultiplier(target)) or 1.0
         if mult <= 0 then return INF end
         return (hp + b_phys + b_all) / mult
     end
 
     if damage_type == DT.DAMAGE_TYPE_MAGICAL then
         if NPC.HasState(target, MS.MODIFIER_STATE_MAGIC_IMMUNE) then return INF end
-        local mult = NPC.GetMagicalArmorDamageMultiplier(target)
+        local mult = (NPC.GetMagicalArmorDamageMultiplier and NPC.GetMagicalArmorDamageMultiplier(target)) or 1.0
         if mult <= 0 then return INF end
         return (hp + b_magi + b_all) / mult
     end
@@ -260,12 +263,12 @@ function Target.EffectiveHpVs(target, source, damage_type)
 end
 
 ----------------------------------------------------------------------------
--- v6.8 , combat-state predicates for combo/sequence decisions
+-- v6.8 - combat-state predicates for combo/sequence decisions
 ----------------------------------------------------------------------------
 
 -- Items the target could use to escape a committed ult: invuln, dispel,
 -- magic-immune. v6.13 Cross F#7: derived from threat_data.SAVE_KIND instead
--- of hardcoded , when SAVE_KIND changes (e.g. v6.7 BKB gained dispel_basic),
+-- of hardcoded - when SAVE_KIND changes (e.g. v6.7 BKB gained dispel_basic),
 -- this list updates automatically. Picks items whose kinds include any of
 -- {invuln, dispel_basic, reflect_target, magic_immune}.
 local TD = require("lib.threat_data")
@@ -286,13 +289,13 @@ function Target.HasReadyEscapeItem(e)
 end
 
 ---v6.12: window-aware escape detection. Returns one of:
----  `"active"` , a dispel/immunity buff is currently on the target. R wasted.
----  `"ready"`  , at least one escape item off CD. Likely popped during our cast.
----  `"soon"`   , no escape ready, but at least one comes off CD within
+---  `"active"` - a dispel/immunity buff is currently on the target. R wasted.
+---  `"ready"`  - at least one escape item off CD. Likely popped during our cast.
+---  `"soon"`   - no escape ready, but at least one comes off CD within
 ---               `soon_window_s` (default 2.4s ~= Sniper R cast point + buffer).
 ---               Pro behavior: target will pop dispel as R impacts → R wasted.
----  `"long"`   , escape item(s) exist but all on CD beyond the cast window.
----  `"none"`   , target has no escape items at all.
+---  `"long"`   - escape item(s) exist but all on CD beyond the cast window.
+---  `"none"`   - target has no escape items at all.
 ---
 ---Hedges:
 ---  - If target has Refresher Orb / Shard, downgrade `"long"` to `"soon"`
@@ -356,7 +359,7 @@ function Target.IsKitingUs(target, me)
     if not NPC.IsRunning(target) then return false end
     local m_pos = Entity.GetAbsOrigin(me)
     if not m_pos then return false end
-    -- v6.15.232: FindRotationAngle is radians , math.deg before the compare.
+    -- v6.15.232: FindRotationAngle is radians - math.deg before the compare.
     local angle_to_me = math.deg(math.abs(NPC.FindRotationAngle(target, m_pos)))
     if angle_to_me <= 90 then return false end  -- not even facing away
 
@@ -368,7 +371,7 @@ function Target.IsKitingUs(target, me)
     local idx = Entity.GetIndex(target)
     local t_now = GlobalVars.GetCurTime()
     local rec = _kite_track[idx]
-    -- v6.15.2 M2: opportunistic GC every 5s , drop entries where last_t is
+    -- v6.15.2 M2: opportunistic GC every 5s - drop entries where last_t is
     -- older than 30s (entity dead / fog / index reused for a different
     -- entity since). Cheap pass; runs at most once per 5s of game time.
     if (t_now - _kite_last_gc) > 5.0 then
@@ -377,7 +380,7 @@ function Target.IsKitingUs(target, me)
             if (t_now - r.last_t) > 30 then _kite_track[k] = nil end
         end
     end
-    -- v6.15.2 M2: dead-target check , if the entity died and respawned
+    -- v6.15.2 M2: dead-target check - if the entity died and respawned
     -- (Source reuses EntIndex), the cached `last_dist_sqr` is stale. Drop
     -- the record when the target shows signs of newness (alive again after
     -- being unseen for > 5s).
