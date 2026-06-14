@@ -81,7 +81,12 @@ local Target  -- resolved lazily inside ComputeArrivalTime; see v0.5.75.1 note a
 ---  invuln                   - caster goes invuln (Eul cyclone, Aeon trigger,
 ---                             Wind Waker cyclone)
 ---  dispel_basic             - applies basic dispel (Eul exit, Manta split,
----                             Satanic active, Diffusal/Disperser purge)
+---                             Satanic active, Diffusal purge)
+---  dispel_strong            - applies strong dispel; supersets basic dispel
+---                             (Aeon trigger, Disperser purge, Wind Waker).
+---                             DeriveCounters emits dispel_strong for every
+---                             dispellable threat, so a strong-dispel item
+---                             counters both basic- and strong-only debuffs.
 ---  magic_immune             - magic immunity (BKB)
 ---  magic_barrier            - absorbs magic damage via barrier (Eternal
 ---                             Shroud, Pipe of Insight)
@@ -111,11 +116,14 @@ local Target  -- resolved lazily inside ComputeArrivalTime; see v0.5.75.1 note a
 ThreatData.SAVE_KIND = {
     -- Self-protection items
     item_cyclone            = { "invuln", "dispel_basic" },     -- 2.5s cyclone
-    item_wind_waker         = { "invuln", "dispel_basic" },     -- 3.5s cyclone, dispel on exit, can act during cyclone
+    item_wind_waker         = { "invuln", "dispel_basic" },     -- 2.5s cyclone, basic dispel on cast (Liquipedia 7.41), can act during cyclone
     -- v6.7: Aeon Disk applies STRONG dispel on trigger (Liquipedia 7.41).
-    -- Strong dispel supersets basic dispel - can counter Nightmare, Doom,
-    -- Ensnare even after they land.
-    item_aeon_disk          = { "invuln", "dispel_basic" },     -- auto-trigger 1.5s invuln + strong dispel at <=80% HP
+    -- Strong dispel supersets basic dispel: mechanically it can remove
+    -- Nightmare/Ensnare/etc even after they land. SaveCounters realizes this
+    -- once threats are profiled (DeriveCounters emits dispel_strong for every
+    -- dispellable threat; until the threat-profile migration lands, a threat's
+    -- counter list may still carry only dispel_basic).
+    item_aeon_disk          = { "invuln", "dispel_strong" },    -- auto-trigger 1.5s invuln + strong dispel at <=80% HP
     item_lotus_orb          = { "reflect_target" },
     item_glimmer_cape       = { "invis", "magic_resist" },
     item_solar_crest        = { "invis", "magic_resist" },      -- self-cast: 6s invis + armor buff
@@ -124,15 +132,17 @@ ThreatData.SAVE_KIND = {
     -- counterable threats.
     item_black_king_bar     = { "magic_immune", "dispel_basic" },
     -- v6.7: item_eternal_shroud was REMOVED in 7.41 - entry deleted.
-    item_pipe_of_insight    = { "magic_barrier" },              -- AoE magic barrier on team
+    item_pipe    = { "magic_barrier" },              -- AoE magic barrier on team
     item_crimson_guard      = { "damage_block" },               -- AoE flat damage block + team barrier
     item_blade_mail         = { "damage_return" },
     item_ghost              = { "physical_immune" },            -- 4s ghost form: immune physical, takes 40% more magic
     -- Dispel-on-self items
     item_satanic            = { "dispel_basic" },
     item_manta              = { "dispel_basic" },
-    item_disperser          = { "dispel_basic" },               -- self-cast strong dispel + slow split
+    item_disperser          = { "dispel_strong" },              -- self-cast strong dispel + slow split (Liquipedia 7.41)
     item_diffusal_blade     = { "dispel_basic" },               -- target enemy: purge + slow
+    item_invis_sword        = { "invis" },                      -- Shadow Blade: wind-walk breaks attack target-lock
+    item_silver_edge        = { "invis" },                      -- wind-walk + break (attack target-lock)
     -- Displacement items
     item_hurricane_pike     = { "displacement_far", "displacement_perp" },
     item_force_staff        = { "displacement_far", "displacement_perp" },
@@ -154,7 +164,434 @@ ThreatData.SAVE_KIND = {
 ---Threat modifier → list of save-kind names that effectively counter it.
 ---Threats not listed are unconstrained (any save kind is allowed).
 ---@type table<string, string[]>
-ThreatData.THREAT_COUNTER = {
+----------------------------------------------------------------------------
+-- THREAT_PROFILE -- per-threat Liquipedia+KV facts (Lina/THREAT_COUNTER_AXIS_DESIGN.md).
+-- THREAT_COUNTER is ASSEMBLED from these via DeriveCounters (below SaveCounters'
+-- sibling, after the function is defined). Facts are KV-grounded (damage_type/
+-- pierces/dispellable from lib/ability_data.lua) + Liquipedia-verified judgment
+-- fields. Each `note` records the source/rationale + any KV-vs-Liquipedia conflict.
+----------------------------------------------------------------------------
+ThreatData.THREAT_PROFILE = {
+    ["modifier_abyssal_underlord_pit_of_malice_ensare"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="basic", delivery="spell", positional=true, primary_harm="disable", timing="pre_cast", blocks_forced_movement=true, lotus_reflectable=false, zone_outlasts_cyclone=true, severity="survivable", add_kinds={"dispel_basic", "dispel_strong"},
+        note="Placed recurring-root zone, primary_harm=disable (root dominant; token 20-50 magical dmg) -> no magic_barrier (rule problem #10). zone_outlasts_cyc..." },
+    ["modifier_axe_berserkers_call"] = { school="physical", damage_type="none", pierces_spell_immunity=true, dispellable="none", delivery="attack", primary_harm="disable", timing="reactive", forced_leash=true, lotus_reflectable=false, severity="lethal",
+        note="Taunt = forced-leash equivalent (you are locked attacking Axe and exposed to his team). KV routes it INFORMATIONAL because it pierces BKB and is un..." },
+    ["modifier_bane_fiends_grip"] = { school="pure", damage_type="pure", pierces_spell_immunity=true, dispellable="strong", delivery="channel", primary_harm="disable", timing="mid_channel", severity="lethal", drop_kinds={"displacement_far", "displacement_perp", "displacement_blink"}, add_kinds={"invuln"},
+        note="CONFLICT: KV dispellable=yes_strong but Liquipedia says 'Dispellable by any Dispel sources' (i.e. basic). Kept KV strong per authoritative-KV rule...." },
+    ["modifier_bane_nightmare"] = { school="magical", damage_type="none", pierces_spell_immunity=false, dispellable="basic", delivery="spell", targeted=true, primary_harm="disable", timing="pre_cast", severity="survivable", add_kinds={"dispel_basic", "dispel_strong"},
+        note="CONFLICT: none. KV note flagged 'VERIFY enemy-side'; Liquipedia confirms Nightmare does NOT pierce spell immunity on enemies, so pierces='false' st..." },
+    ["modifier_crystal_maiden_freezing_field"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="none", delivery="channel", positional=true, primary_harm="damage", timing="pre_cast", lotus_reflectable=false, zone_outlasts_cyclone=true,
+        note="CONFLICT: KV crystal_maiden_freezing_field has no dispellable field (=none); Liquipedia notes the SLOW debuff is dispellable by any dispel. The bra..." },
+    ["modifier_disruptor_kinetic_field"] = { school="none", damage_type="none", pierces_spell_immunity=false, dispellable="none", delivery="spell", positional=true, primary_harm="disable", timing="pre_cast", blocks_forced_movement=true, lotus_reflectable=false, zone_outlasts_cyclone=true, severity="survivable",
+        note="CONFLICT: KV damage_type=none and the ability is terrain-like; set school=none (not magical) because Liquipedia confirms Kinetic Field functions as..." },
+    ["modifier_disruptor_static_storm_thinker"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="none", delivery="spell", positional=true, primary_harm="damage", timing="pre_cast", lotus_reflectable=false, zone_outlasts_cyclone=true, severity="lethal",
+        note="Placed AoE silence+damage dome (point cast, targeted=false, positional). 350 DPS over 6s -> severity=lethal so magic_resist excluded; magic_barrier..." },
+    ["modifier_doom_bringer_doom"] = { school="pure", damage_type="pure", pierces_spell_immunity=true, dispellable="none", delivery="spell", targeted=true, primary_harm="disable", timing="pre_cast", severity="lethal",
+        note="CONFLICT: none. KV (dt=pure, pierces=true=enemies_yes, disp=none) matches Liquipedia exactly. This is the rule-review's confirmed example (drop mag..." },
+    ["modifier_earth_spirit_rolling_boulder"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="strong", delivery="line_charge", primary_harm="disable", timing="at_impact", lotus_reflectable=false,
+        note="KV: magical / enemies_no (no pierce) / yes_strong. This is the de-hallucination case: a prior agent claimed pure+pierces; KV and Liquipedia both co..." },
+    ["modifier_earthshaker_echo_slam"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="none", delivery="spell", positional=true, primary_harm="damage", timing="pre_cast", lotus_reflectable=false, drop_kinds={"displacement_perp", "displacement_far", "displacement_blink"},
+        note="No-target instant burst centered on Earthshaker: initial magical damage + echo magical damage per nearby unit, no stun. Liquipedia confirms: magica..." },
+    ["modifier_enigma_black_hole"] = { school="pure", damage_type="pure", pierces_spell_immunity=true, dispellable="none", delivery="channel", positional=true, primary_harm="disable", timing="pre_cast", lotus_reflectable=false, zone_outlasts_cyclone=true,
+        note="Liquipedia confirms: point-target channelled AoE (420 inner radius) that pulls+disables, 4s max channel (zone_outlasts_cyclone=true, >2.5s), PURE d..." },
+    ["modifier_kez_grappling_claw_slow"] = { school="physical", damage_type="physical", pierces_spell_immunity=false, dispellable="none", delivery="attack", primary_harm="damage", timing="at_impact", severity="survivable", drop_kinds={"invis"}, add_kinds={"displacement_blink", "reflect_target"},
+        note="CONFLICT: Batch KV listed dt as 'none (PHYSICAL hit - VERIFY)'; Liquipedia + ability_data.lua (line 617, behavior unit_target, instant attack on ar..." },
+    ["modifier_legion_commander_duel"] = { school="physical", damage_type="none", pierces_spell_immunity=true, dispellable="none", delivery="attack", primary_harm="disable", timing="reactive", forced_leash=true, lotus_reflectable=false, severity="lethal",
+        note="Forced-leash attack-driven ult. school=physical + delivery=attack drives the physical branch: physical_immune + damage_block (Ghost/Ethereal makes ..." },
+    ["modifier_life_stealer_open_wounds"] = { school="magical", damage_type="none", pierces_spell_immunity=false, dispellable="basic", delivery="spell", targeted=true, primary_harm="disable", timing="post_apply", debuff_sticks_to_self=true, severity="survivable",
+        note="Sticky self-debuff slow, damage_type=none so no magic_barrier. school=magical (Liquipedia: does not pierce debuff immunity -> BKB prevents it) so m..." },
+    ["modifier_lina_laguna_blade"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="none", delivery="spell", targeted=true, primary_harm="damage", timing="pre_cast", severity="lethal",
+        note="CONFLICT: none for the base ability. KV (dt=magical, pierces=false, disp=none, damage scaling 380/565/750) matches base Laguna. (Note: shard conver..." },
+    ["modifier_lina_light_strike_array"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="strong", delivery="spell", positional=true, primary_harm="disable", timing="pre_cast", lotus_reflectable=false,
+        note="Area-target placed ground AoE with a 0.5s arming/effect delay, 250 radius, 1.2-2.4s stun, 80-200 magical token damage. LIQUIPEDIA_REF.md confirms: ..." },
+    ["modifier_lion_finger_of_death"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="none", delivery="spell", targeted=true, primary_harm="damage", timing="pre_cast", severity="lethal",
+        note="CONFLICT: Liquipedia's auto-summary on the standalone Finger_of_Death page wrongly claimed 'pierces spell immunity' AND 'pure damage' AND 'magical ..." },
+    ["modifier_lion_mana_drain"] = { school="magical", damage_type="none", pierces_spell_immunity=false, dispellable="none", delivery="channel", primary_harm="disable", timing="mid_channel", severity="survivable", add_kinds={"invuln", "magic_immune"},
+        note="CONFLICT: none (KV damage_type=none / enemies_no / dispellable=no all match Liquipedia). 'Only dispellable by Death' => dispellable none in our tax..." },
+    ["modifier_lion_voodoo"] = { school="magical", damage_type="none", pierces_spell_immunity=false, dispellable="strong", delivery="spell", targeted=true, primary_harm="disable", timing="pre_cast", severity="survivable", add_kinds={"dispel_strong"},
+        note="CONFLICT: none. KV (dt=none, pierces=false, disp=strong) matches Liquipedia exactly. | Magical no-damage hex => school=magical, damage_type=none, p..." },
+    ["modifier_magnataur_reverse_polarity_stun"] = { school="magical", damage_type="magical", pierces_spell_immunity=true, dispellable="strong", delivery="spell", positional=true, primary_harm="disable", timing="pre_cast", lotus_reflectable=false, drop_kinds={"displacement_perp", "displacement_far", "displacement_blink"},
+        note="No-target instant AoE lock (375 radius) that pulls all enemies to Magnus and stuns 2.0-3.5s. Liquipedia confirms: PIERCES debuff immunity (affects ..." },
+    ["modifier_magnataur_skewer"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="basic", delivery="line_charge", primary_harm="displacement", timing="at_impact", lotus_reflectable=false,
+        note="KV: magical / enemies_no (no pierce) / yes=basic. Liquipedia confirms Skewer is a point/line charge in which Magnus dashes and DRAGS affected enemi..." },
+    ["modifier_mirana_arrow"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="strong", delivery="projectile_line", primary_harm="disable", timing="at_impact", lotus_reflectable=false,
+        note="KV: magical / enemies_no (no pierce) / yes_strong. Liquipedia confirms Sacred Arrow is a traveling line skillshot (dodgeable in flight at 900 speed..." },
+    ["modifier_naga_siren_ensnare"] = { school="magical", damage_type="none", pierces_spell_immunity=false, dispellable="basic", delivery="projectile_homing", targeted=true, primary_harm="disable", timing="at_impact", blocks_forced_movement=true, severity="survivable", add_kinds={"invuln", "reflect_target", "dispel_basic", "dispel_strong"},
+        note="CONFLICT: none. KV (dt=none, pierces=false=enemies_no, disp=yes/basic, projectile-style net) matches Liquipedia. Scepter (has_scepter=1) adds condi..." },
+    ["modifier_phantom_assassin_phantom_strike_target"] = { school="physical", damage_type="physical", pierces_spell_immunity=true, dispellable="basic", delivery="attack", primary_harm="damage", timing="reactive", enemy_self_buff=true, attack_enabler=true, severity="lethal",
+        note="CONFLICT: none (KV spell_immunity=enemies_yes => pierces=true; dispellable=yes => basic; behavior 'blink + attack-speed buff = attack enabler' matc..." },
+    ["modifier_pudge_dismember"] = { school="magical", damage_type="magical", pierces_spell_immunity=true, dispellable="strong", delivery="channel", primary_harm="disable", timing="mid_channel", severity="lethal", drop_kinds={"displacement_far", "displacement_perp", "displacement_blink"}, add_kinds={"invuln"},
+        note="CONFLICT: none (KV magical/pierces=true/strong matches Liquipedia). Lotus reflects at cast only (not modeled by reflect_target, delivery=channel). ..." },
+    ["modifier_pudge_dismember_pull"] = { school="magical", damage_type="magical", pierces_spell_immunity=true, dispellable="strong", delivery="channel", primary_harm="disable", timing="mid_channel", severity="lethal", drop_kinds={"displacement_far", "displacement_perp", "displacement_blink"}, add_kinds={"invuln"},
+        note="CONFLICT: none. KV row pudge_dismember_pull shares ability pudge_dismember (magical/pierces=true/strong). | The pull is the displacement sub-modifi..." },
+    ["modifier_pudge_meat_hook"] = { school="pure", damage_type="pure", pierces_spell_immunity=true, dispellable="none", delivery="projectile_line", primary_harm="displacement", timing="at_impact", lotus_reflectable=false, severity="lethal", drop_kinds={"invuln"},
+        note="KV: pure / enemies_yes (pierces) / none. Liquipedia confirms Meat Hook deals PURE damage, pierces debuff immunity, stun is only-dispellable-by-deat..." },
+    ["modifier_pugna_life_drain"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="none", delivery="channel", primary_harm="damage", timing="mid_channel", severity="lethal", add_kinds={"invuln", "magic_immune"},
+        note="CONFLICT: Liquipedia says 'Pierces Debuff Immunity sources' for Life Drain, but KV spell_immunity=enemies_no (does NOT pierce). Per the authoritati..." },
+    ["modifier_razor_static_link_debuff"] = { school="magical", damage_type="none", pierces_spell_immunity=true, dispellable="none", delivery="spell", targeted=true, primary_harm="disable", timing="pre_cast", severity="survivable",
+        note="CONFLICT: Old file comment said 'pierces BKB' vs an agent's 'partial'; KV spell_immunity=enemies_yes => pierces=true and Liquipedia confirms the ha..." },
+    ["modifier_shadow_shaman_shackles"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="strong", delivery="channel", primary_harm="disable", timing="mid_channel", severity="lethal", drop_kinds={"displacement_far", "displacement_perp", "displacement_blink"}, add_kinds={"invuln", "magic_immune"},
+        note="CONFLICT: Liquipedia 'Pierces Debuff Immunity sources conditionally' vs KV enemies_no. Resolved: the conditional pierce is Aghanim's Scepter only; ..." },
+    ["modifier_shadow_shaman_voodoo"] = { school="magical", damage_type="none", pierces_spell_immunity=false, dispellable="strong", delivery="spell", targeted=true, primary_harm="disable", timing="pre_cast", severity="survivable", add_kinds={"dispel_strong"},
+        note="CONFLICT: none. KV (dt=none, pierces=false, disp=strong) matches Liquipedia. Mechanically identical to Lion Hex. | Same class as Lion Voodoo: magic..." },
+    ["modifier_slark_pounce"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="none", delivery="leap", primary_harm="disable", timing="at_impact", lotus_reflectable=false, severity="survivable",
+        note="CONFLICT: none (KV damage_type=magical but pounce_damage=0 so primary_harm=disable not damage; spell_immunity=enemies_no => pierces=false matches L..." },
+    ["modifier_spirit_breaker_charge_of_darkness"] = { school="magical", damage_type="none", pierces_spell_immunity=false, dispellable="none", delivery="homing_charge", primary_harm="disable", timing="at_impact", severity="lethal",
+        note="CONFLICT: Liquipedia phrases spell immunity as 'pierces Debuff Immunity conditionally', but KV spell_immunity=enemies_no => pierces=false and the r..." },
+    ["modifier_sven_storm_bolt"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="strong", delivery="projectile_homing", targeted=true, primary_harm="disable", timing="at_impact", add_kinds={"invuln", "reflect_target"},
+        note="KV: magical / enemies_no (no pierce) / yes_strong; behavior unit_target+aoe homing projectile. Liquipedia: unit-targeted projectile launched at the..." },
+    ["modifier_tidehunter_ravage"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="strong", delivery="spell", positional=true, primary_harm="disable", timing="pre_cast", lotus_reflectable=false, drop_kinds={"displacement_perp", "displacement_far", "displacement_blink"},
+        note="No-target instant PBAoE stun (1250 radius), 2.0-2.4s stun, 275-475 magical token damage. KV (ability_data.lua L1847): damage_type=magical, spell_im..." },
+    ["modifier_treant_overgrowth"] = { school="magical", damage_type="magical", pierces_spell_immunity=true, dispellable="basic", delivery="spell", positional=true, primary_harm="disable", timing="reactive", lotus_reflectable=false, drop_kinds={"displacement_blink"},
+        note="No-target PBAoE root (800 radius) around Treant, 3-5s root, 95/s magical DoT. KV (ability_data.lua L1877): damage_type=magical, spell_immunity=enem..." },
+    ["modifier_tusk_ice_shards_thinker"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="none", delivery="projectile_line", primary_harm="disable", timing="at_impact", lotus_reflectable=false,
+        note="KV: magical / enemies_no (no pierce) / no dispellable field (=none). Liquipedia confirms Ice Shards is a point/line projectile that damages on impa..." },
+    ["modifier_tusk_snowball_movement"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="none", delivery="homing_charge", primary_harm="damage", timing="at_impact", severity="lethal",
+        note="CONFLICT: none (KV damage_type=magical, spell_immunity=enemies_no => pierces=false, dispellable=no all match Liquipedia: harmful payload does not p..." },
+    ["modifier_ursa_overpower"] = { school="physical", damage_type="none", pierces_spell_immunity=false, dispellable="basic", delivery="attack", primary_harm="damage", timing="pre_cast", lotus_reflectable=false, enemy_self_buff=true, severity="lethal",
+        note="Enemy self-buff (buff is ON Ursa). enemy_self_buff=true -> dispel branch suppressed (your dispel cannot remove Ursa's self-buff; only diffusal-on-h..." },
+    ["modifier_witch_doctor_death_ward"] = { school="pure", damage_type="pure", pierces_spell_immunity=true, dispellable="none", delivery="channel", positional=true, primary_harm="damage", timing="mid_channel", severity="lethal", add_kinds={"invuln", "invis"},
+        note="CONFLICT: none (KV pure / pierces=true / dispellable absent => none matches). Lotus interaction not documented as reflectable in the harmful sense;..." },
+    ["modifier_zuus_lightning_bolt"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="none", delivery="spell", targeted=true, primary_harm="damage", timing="pre_cast", severity="survivable",
+        note="CONFLICT: KV dispellable=none for the bolt modifier; Liquipedia says the 0.35s ministun is Strong-dispellable. KV wins for save purposes: the linge..." },
+    ["modifier_zuus_thundergods_wrath"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="none", delivery="spell", primary_harm="damage", timing="pre_cast", lotus_reflectable=false, severity="survivable",
+        note="Global no-target magical nuke. targeted=false (no single-target cast) and lotus_reflectable=false (a global no-target ult is not reflected by Lotus..." },
+
+    -- ===== Task 7: previously-unconstrained catalogued threats (164) =====
+    ["modifier_alchemist_unstable_concoction"] = { school="magical", damage_type="none", pierces_spell_immunity=false, dispellable="none", delivery="projectile_homing", primary_harm="disable", timing="at_impact", lotus_reflectable=false, severity="survivable", drop_kinds={"displacement_blink"},
+        note="Concoction Throw is a unit-target latching projectile (KV unit_target+aoe, projectile_speed 900). KV throw row has no damage_type (dt nil => damage..." },
+    ["modifier_ancient_apparition_bone_chill_debuff"] = { school="magical", damage_type="none", pierces_spell_immunity=false, dispellable="none", delivery="spell", primary_harm="disable", timing="post_apply", lotus_reflectable=false, severity="survivable",
+        note="CONFLICT: Liquipedia says Bone Chill is 'Dispellable by any Dispel sources' (basic), but the authoritative modifier KV line gives disp=nil => dispe..." },
+    ["modifier_ancientapparition_coldfeet_freeze"] = { school="magical", damage_type="none", pierces_spell_immunity=false, dispellable="strong", delivery="spell", primary_harm="disable", timing="post_apply", lotus_reflectable=false, severity="survivable",
+        note="CONFLICT: KV slot for this modifier was empty (unmapped). Resolved ability ancient_apparition_cold_feet has dt=magical, si=enemies_no, disp=yes(bas..." },
+    ["modifier_arc_warden_flux"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="basic", delivery="spell", targeted=true, primary_harm="damage", timing="pre_cast", severity="survivable",
+        note="Flux is a single-target magical DoT (+isolation slow), Liquipedia: unit-targeted, primary harm is magical damage over time, basic-dispellable (matc..." },
+    ["modifier_batrider_flaming_lasso"] = { school="magical", damage_type="magical", pierces_spell_immunity=true, dispellable="strong", delivery="spell", targeted=true, primary_harm="disable", timing="pre_cast", forced_leash=true, severity="survivable",
+        note="CONFLICT: Liquipedia describes the lasso debuff as 'Only dispellable by Death', but authoritative KV gives disp=yes_strong => dispellable=strong. K..." },
+    ["modifier_beastmaster_primal_roar"] = { school="magical", damage_type="magical", pierces_spell_immunity=true, dispellable="strong", delivery="spell", targeted=true, primary_harm="disable", timing="pre_cast", severity="survivable",
+        note="Primal Roar is a long single-target stun (3-4s) that pierces debuff immunity (KV enemies_yes) with only token magical damage. pierces=true suppress..." },
+    ["modifier_blinding_light_knockback"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="basic", delivery="spell", primary_harm="displacement", timing="at_impact", lotus_reflectable=false, severity="survivable",
+        note="CONFLICT: KV slot for this modifier was empty (unmapped). Resolved ability keeper_of_the_light_blinding_light: dt=magical, si=enemies_no, disp=yes(..." },
+    ["modifier_bloodseeker_rupture"] = { school="pure", damage_type="pure", pierces_spell_immunity=true, dispellable="none", delivery="spell", targeted=true, primary_harm="damage", timing="pre_cast", severity="lethal",
+        note="Rupture deals pure movement-based damage, pierces debuff immunity (KV enemies_yes), and is not dispellable (KV disp=no => none; 'only dispellable b..." },
+    ["modifier_bounty_hunter_shuriken_toss"] = { school="magical", damage_type="none", pierces_spell_immunity=false, dispellable="none", delivery="spell", targeted=true, primary_harm="disable", timing="at_impact", severity="survivable",
+        note="Unit-target non-homing magical projectile that applies only a 0.35s 100% slow (no meaningful damage; modeled damage_type=none, primary_harm=disable..." },
+    ["modifier_brewmaster_cinder_brew"] = { school="magical", damage_type="none", pierces_spell_immunity=false, dispellable="basic", delivery="spell", primary_harm="disable", timing="post_apply", lotus_reflectable=false, severity="survivable",
+        note="Area ground-cast that drenches enemies with a dispellable magical slow debuff (24-36% for 5s); collision damage is incidental so the countered modi..." },
+    ["modifier_bristleback_hairball_slow"] = { school="magical", damage_type="none", pierces_spell_immunity=false, dispellable="basic", delivery="spell", primary_harm="disable", timing="post_apply", lotus_reflectable=false, severity="survivable",
+        note="Hairball is a point-target projectile that erupts and applies a slow debuff. KV dt=nil => damage_type=none; this slow modifier carries no damage. s..." },
+    ["modifier_broodmother_sticky_snare"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="basic", delivery="spell", primary_harm="disable", timing="post_apply", lotus_reflectable=false, severity="survivable", add_kinds={"magic_barrier"},
+        note="Aghanim placed web trap: roots for ~2.75s and deals 100 magical DPS (~300 over 3s). KV magical + enemies_no(no-pierce) + disp yes(basic). Primary h..." },
+    ["modifier_chaos_knight_chaos_bolt"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="strong", delivery="spell", targeted=true, primary_harm="disable", timing="pre_cast", severity="lethal", add_kinds={"dispel_strong"},
+        note="Unit-target parabolic projectile, random stun 1.25-3.25s (primary_harm=disable) + random magical damage. KV magical + enemies_no(no-pierce) + disp ..." },
+    ["modifier_chaos_knight_reality_rift"] = { school="magical", damage_type="none", pierces_spell_immunity=false, dispellable="basic", delivery="spell", targeted=true, primary_harm="displacement", timing="post_apply", severity="survivable", drop_kinds={"magic_immune"}, add_kinds={"dispel_basic"},
+        note="CONFLICT: KV beh lists root_disables but Liquipedia confirms Reality Rift does NOT root or disarm the target after the pull; the flag reflects the ..." },
+    ["modifier_chen_penitence"] = { school="pure", damage_type="pure", pierces_spell_immunity=false, dispellable="basic", delivery="spell", targeted=true, primary_harm="disable", timing="post_apply", severity="survivable", add_kinds={"magic_immune"},
+        note="Unit-target debuff: slow (12-30%) + damage amplification for 5-8s, plus a small pure-damage instance on cast. KV pure + enemies_no(no-pierce) + dis..." },
+    ["modifier_chilling_touch_slow"] = { school="magical", damage_type="none", pierces_spell_immunity=false, dispellable="basic", delivery="attack", primary_harm="disable", timing="post_apply", lotus_reflectable=false, severity="survivable",
+        note="CONFLICT: KV dt=magical refers to the attack's bonus magic damage; this modifier_chilling_touch_slow carries no damage, only the brief movement slo..." },
+    ["modifier_chilling_touch_super_slow"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="basic", delivery="attack", primary_harm="disable", timing="post_apply", lotus_reflectable=false, severity="survivable",
+        note="CONFLICT: ab unmapped in KV; resolved to ancient_apparition_chilling_touch (slow=100). KV dt=magical/si=enemies_no/disp=yes used authoritatively. |..." },
+    ["modifier_cold_feet"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="basic", delivery="spell", targeted=true, primary_harm="disable", timing="post_apply", severity="survivable",
+        note="CONFLICT: none; KV dt=magical/si=enemies_no/disp=yes match Liquipedia (basic dispel). | Cold Feet applies instantly (no projectile) and the threat ..." },
+    ["modifier_crystal_maiden_frostbite"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="basic", delivery="spell", targeted=true, primary_harm="disable", timing="post_apply", severity="survivable",
+        note="CONFLICT: none; KV dt=magical/si=enemies_no/disp=yes match Liquipedia (root, basic dispel). | Frostbite is an instant single-target root debuff (pr..." },
+    ["modifier_dark_seer_ion_shell"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="basic", delivery="spell", primary_harm="damage", timing="post_apply", lotus_reflectable=false, severity="survivable",
+        note="CONFLICT: none; KV dt=magical/si=enemies_no/disp=yes match Liquipedia (magic DoT, basic dispel). | When cast on the defender, Ion Shell is a persis..." },
+    ["modifier_dark_seer_vacuum"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="strong", delivery="spell", primary_harm="displacement", timing="pre_cast", lotus_reflectable=false, severity="survivable",
+        note="CONFLICT: none; KV dt=magical/si=enemies_no/disp=yes_strong match Liquipedia (BKB blocks it, strong dispel). | Vacuum's dominant harm is the forced..." },
+    ["modifier_dark_willow_bramble_maze"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="basic", delivery="spell", positional=true, primary_harm="disable", timing="post_apply", lotus_reflectable=false, zone_outlasts_cyclone=true, severity="survivable",
+        note="CONFLICT: none; KV dt=magical/si=enemies_no/disp=yes match Liquipedia (root + magic DoT, basic dispel). | Placed persistent AoE zone (positional=tr..." },
+    ["modifier_dark_willow_cursed_crown"] = { school="magical", damage_type="none", pierces_spell_immunity=false, dispellable="basic", delivery="spell", targeted=true, primary_harm="disable", timing="post_apply", severity="survivable",
+        note="CONFLICT: KV dt=nil => damage_type=none (Cursed Crown deals no damage, consistent with Liquipedia). si=enemies_no/disp=yes used authoritatively. sc..." },
+    ["modifier_dark_willow_terrorize"] = { school="magical", damage_type="none", pierces_spell_immunity=false, dispellable="basic", delivery="spell", primary_harm="disable", timing="post_apply", lotus_reflectable=false, severity="survivable",
+        note="CONFLICT: KV dt=magical but Terrorize lists no damage value => modeled damage_type=none (fear/no-damage). si=enemies_no/disp=yes used authoritative..." },
+    ["modifier_dawnbreaker_celestial_hammer"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="basic", delivery="projectile_line", primary_harm="damage", timing="at_impact", lotus_reflectable=false, severity="survivable",
+        note="Point-target line projectile (projectile_line), magical no-pierce damage+slow, basic dispel. invuln (at_impact, non-homing) + magic_immune (school=..." },
+    ["modifier_dazzle_poison_touch"] = { school="physical", damage_type="physical", pierces_spell_immunity=false, dispellable="basic", delivery="spell", primary_harm="damage", timing="post_apply", lotus_reflectable=false, severity="survivable",
+        note="CONFLICT: KV behavior=unit_target but current Liquipedia Poison Touch is a cone; immaterial to derivation (delivery=spell either way, not Lotus-rel..." },
+    ["modifier_death_prophet_silence"] = { school="magical", damage_type="none", pierces_spell_immunity=false, dispellable="basic", delivery="projectile_line", primary_harm="disable", timing="at_impact", lotus_reflectable=false, severity="survivable",
+        note="No-damage magical silence delivered as an area projectile at impact => school=magical, damage_type=none, primary_harm=disable. invuln (at_impact, n..." },
+    ["modifier_doom_bringer_infernal_blade"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="basic", delivery="attack", primary_harm="disable", timing="at_impact", lotus_reflectable=false, severity="survivable", add_kinds={"magic_immune"},
+        note="Attack-driven magical stun+burn. delivery=attack, school=magical. invuln fires (at_impact, non-homing) -> dodging/avoiding the attack avoids it. ma..." },
+    ["modifier_dragon_knight_dragon_tail"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="strong", delivery="spell", targeted=true, primary_harm="disable", timing="pre_cast", severity="survivable",
+        note="Unit-target instant magical stun (disable-primary, token damage), strong-dispel only, no-pierce. invuln (pre_cast) + magic_immune (school=magical, ..." },
+    ["modifier_drow_ranger_frost_arrows_slow"] = { school="physical", damage_type="physical", pierces_spell_immunity=false, dispellable="basic", delivery="attack", primary_harm="disable", timing="post_apply", lotus_reflectable=false, severity="survivable",
+        note="Attack-driven physical orb that kites via a slow-on-hit. school=physical, delivery=attack => physical branch: physical_immune + damage_block (BKB/G..." },
+    ["modifier_earth_spirit_rolling_boulder_caster"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="strong", delivery="line_charge", primary_harm="disable", timing="at_impact", lotus_reflectable=false, severity="survivable",
+        note="CONFLICT: Prior pass HALLUCINATED 'pure+pierces -> drop magic_immune'; KV is magical/enemies_no (no-pierce), so magic_immune is CORRECT here per th..." },
+    ["modifier_earthshaker_earthsplitter"] = { school="magical", damage_type="magical", pierces_spell_immunity=true, dispellable="basic", delivery="spell", positional=true, primary_harm="damage", timing="at_impact", lotus_reflectable=false, severity="survivable",
+        note="CONFLICT: Modifier name 'modifier_earthshaker_earthsplitter' is MISLABELED: it maps to elder_titan_earth_splitter (lib/ability_data.lua line 393), ..." },
+    ["modifier_earthshaker_fissure_stun"] = { school="magical", damage_type="none", pierces_spell_immunity=false, dispellable="strong", delivery="projectile_line", primary_harm="disable", timing="at_impact", lotus_reflectable=false, severity="lethal", add_kinds={"dispel_strong"},
+        note="CONFLICT: none - batch KV (magical / enemies_no / yes_strong) matches lib/ability_data.lua line 389 earthshaker_fissure | Fissure is a non-piercing..." },
+    ["modifier_ember_spirit_sleight_of_fist_caster"] = { school="physical", damage_type="physical", pierces_spell_immunity=true, dispellable="none", delivery="attack", primary_harm="damage", timing="at_impact", lotus_reflectable=false, enemy_self_buff=true, severity="survivable",
+        note="CONFLICT: none - batch KV (physical / enemies_yes / nil) matches lib/ability_data.lua line 409 ember_spirit_sleight_of_fist | This modifier is Embe..." },
+    ["modifier_enigma_malefice"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="basic", delivery="spell", targeted=true, primary_harm="disable", timing="pre_cast", severity="survivable", add_kinds={"dispel_basic", "dispel_strong"},
+        note="CONFLICT: none - batch KV (magical / enemies_no / yes) matches lib/ability_data.lua line 421 enigma_malefice | Malefice is a single-target instant ..." },
+    ["modifier_faceless_void_chronosphere"] = { school="magical", damage_type="none", pierces_spell_immunity=true, dispellable="none", delivery="spell", positional=true, primary_harm="disable", timing="pre_cast", lotus_reflectable=false, zone_outlasts_cyclone=true, severity="lethal",
+        note="CONFLICT: none - batch KV (nil dmg / enemies_yes / no) matches lib/ability_data.lua line 428 faceless_void_chronosphere | Chronosphere pierces spel..." },
+    ["modifier_faceless_void_chronosphere_freeze"] = { school="magical", damage_type="none", pierces_spell_immunity=true, dispellable="none", delivery="spell", positional=true, primary_harm="disable", timing="pre_cast", lotus_reflectable=false, zone_outlasts_cyclone=true, severity="lethal",
+        note="CONFLICT: none - same ability as chronosphere; batch KV (nil dmg / enemies_yes / no) matches lib/ability_data.lua line 428 faceless_void_chronosphe..." },
+    ["modifier_faceless_void_time_dilation_distortion"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="basic", delivery="spell", primary_harm="disable", timing="post_apply", lotus_reflectable=false, severity="survivable",
+        note="CONFLICT: none - batch KV (magical / enemies_no / yes) matches lib/ability_data.lua line 430 faceless_void_time_dilation | Low-impact AoE slow / co..." },
+    ["modifier_faceless_void_timelock_freeze"] = { school="magical", damage_type="magical", pierces_spell_immunity=true, dispellable="strong", delivery="attack", primary_harm="disable", timing="post_apply", lotus_reflectable=false, severity="survivable",
+        note="CONFLICT: RESOLVED - batch KV labelled this nil/nil/nil because the auto-mapper queried 'faceless_void_timelock'; the real KV ability is 'faceless_..." },
+    ["modifier_furion_sprout"] = { school="none", damage_type="none", pierces_spell_immunity=false, dispellable="none", delivery="spell", positional=true, primary_harm="disable", timing="pre_cast", lotus_reflectable=false, zone_outlasts_cyclone=true, severity="survivable",
+        note="CONFLICT: none on dispel - the modifier_furion_sprout KV (lib/ability_data.lua line 464) has no spell_immunity and no dispellable field, so per the..." },
+    ["modifier_grimstroke_ink_creature"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="none", delivery="projectile_homing", primary_harm="disable", timing="at_impact", lotus_reflectable=false, severity="survivable", drop_kinds={"displacement_blink"}, add_kinds={"invuln"},
+        note="KV: magical, si enemies_no (no pierce), disp no, behavior unit_target. Phantom's Embrace summons a phantom projectile (speed 1150) that travels to ..." },
+    ["modifier_grimstroke_soul_chain"] = { school="magical", damage_type="none", pierces_spell_immunity=true, dispellable="none", delivery="spell", targeted=true, primary_harm="disable", timing="post_apply", forced_leash=true, lotus_reflectable=false, severity="survivable", add_kinds={"displacement_blink"},
+        note="KV dt nil/si enemies_yes(pierce)/disp no. Soulbind: forced leash, pierces, undispellable. Blink Dagger BREAKS the chain (Force does NOT) -> add_kinds displacement_blink (rule has no targeted-leash-blink branch)." },
+    ["modifier_gyrocopter_call_down_slow"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="basic", delivery="spell", primary_harm="damage", timing="post_apply", lotus_reflectable=false, zone_outlasts_cyclone=true, severity="survivable", drop_kinds={"displacement_perp", "displacement_far", "displacement_blink"},
+        note="KV: magical, si enemies_no (no pierce), disp yes (basic), behavior point+aoe. Call Down drops two delayed aerial missiles on a target AREA (point-t..." },
+    ["modifier_gyrocopter_homing_missile"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="strong", delivery="projectile_homing", primary_harm="disable", timing="at_impact", lotus_reflectable=false, severity="survivable", add_kinds={"invuln"},
+        note="KV: magical, si enemies_no (no pierce), disp yes_strong (strong), behavior unit_target. Homing Missile fires a slow accelerating projectile that SE..." },
+    ["modifier_hoodwink_bushwhack"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="strong", delivery="spell", positional=true, primary_harm="disable", timing="at_impact", lotus_reflectable=false, severity="survivable", drop_kinds={"displacement_perp", "displacement_far", "displacement_blink"}, add_kinds={"invuln"},
+        note="KV: magical, si nil (=> pierces false, debuff-immune enemies are explicitly NOT affected per Liquipedia), disp yes_strong (strong), behavior point+..." },
+    ["modifier_huskar_life_break"] = { school="magical", damage_type="magical", pierces_spell_immunity=true, dispellable="basic", delivery="leap", primary_harm="damage", timing="at_impact", lotus_reflectable=false, severity="lethal", add_kinds={"magic_barrier"},
+        note="KV: magical, si enemies_yes (=> pierces true), disp yes (basic dispel, but it is applied on HUSKAR himself on cast, not on the victim), behavior un..." },
+    ["modifier_ice_blast"] = { school="magical", damage_type="magical", pierces_spell_immunity=true, dispellable="none", delivery="projectile_line", primary_harm="damage", timing="at_impact", lotus_reflectable=false, severity="lethal", drop_kinds={"displacement_perp", "displacement_far", "displacement_blink"},
+        note="KV: magical, si enemies_yes (=> pierces true), disp no (none), behavior point+aoe. Ice Blast launches a tracer along a path that is RELEASED to det..." },
+    ["modifier_ice_vortex"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="none", delivery="spell", positional=true, primary_harm="damage", timing="at_impact", lotus_reflectable=false, zone_outlasts_cyclone=true, severity="survivable", drop_kinds={"displacement_perp", "displacement_far", "displacement_blink"},
+        note="KV: magical, si enemies_no (no pierce), disp no (none), behavior aoe+point. Ice Vortex places a persistent ground zone (duration 6-12s) that slows ..." },
+    ["modifier_invoker_cold_snap_freeze"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="basic", delivery="spell", targeted=true, primary_harm="damage", timing="post_apply", debuff_sticks_to_self=true, severity="survivable",
+        note="CONFLICT: Liquipedia changelog text surfaced via WebSearch claims Cold Snap was 'fixed to no longer be dispellable.' Authoritative KV lib/ability_d..." },
+    ["modifier_jakiro_ice_path"] = { school="magical", damage_type="none", pierces_spell_immunity=false, dispellable="strong", delivery="spell", positional=true, primary_harm="disable", timing="at_impact", zone_outlasts_cyclone=true, severity="survivable",
+        note="CONFLICT: none (KV damage=0 => damage_type=none consistent with Liquipedia 'stun is the core mechanic'; dispellable=yes_strong consistent). | No-da..." },
+    ["modifier_jakiro_macropyre_thinker"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="none", delivery="spell", positional=true, primary_harm="damage", timing="at_impact", zone_outlasts_cyclone=true, severity="survivable",
+        note="CONFLICT: none for base ability (KV damage_type=magical, dispellable=no). Note: Aghanim's Scepter converts to pure (KV pure_damage_type flag); base..." },
+    ["modifier_juggernaut_omni_slash"] = { school="physical", damage_type="physical", pierces_spell_immunity=true, dispellable="none", delivery="attack", primary_harm="damage", timing="at_impact", forced_leash=true, lotus_reflectable=false, already_locked_channel=true, severity="lethal",
+        note="CONFLICT: none (KV damage_type=physical, spell_immunity=enemies_yes => pierces=true, dispellable=no => none, all consistent). | Attack-driven physi..." },
+    ["modifier_keeper_of_the_light_blinding_light"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="basic", delivery="spell", primary_harm="damage", timing="pre_cast", severity="survivable",
+        note="CONFLICT: none (KV damage_type=magical, dispellable=yes => basic, spell_immunity=enemies_no => no-pierce, consistent). | Instant AoE magic nuke wit..." },
+    ["modifier_keeper_of_the_light_radiant_bind"] = { school="magical", damage_type="none", pierces_spell_immunity=false, dispellable="basic", delivery="spell", targeted=true, primary_harm="disable", timing="post_apply", debuff_sticks_to_self=true, severity="survivable",
+        note="CONFLICT: none (KV damage_type=nil => none, dispellable=yes => basic, spell_immunity=enemies_no => no-pierce, consistent). No-damage magical disabl..." },
+    ["modifier_keeper_of_the_light_will_o_wisp"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="basic", delivery="spell", positional=true, primary_harm="damage", timing="at_impact", zone_outlasts_cyclone=true, severity="survivable",
+        note="CONFLICT: none (KV damage_type=magical, dispellable=yes => basic, spell_immunity=enemies_no => no-pierce, consistent). | Persistent placed magical ..." },
+    ["modifier_kez_raptor_dance"] = { school="pure", damage_type="pure", pierces_spell_immunity=true, dispellable="none", delivery="spell", positional=true, primary_harm="damage", timing="pre_cast", lotus_reflectable=false, severity="lethal",
+        note="CONFLICT: none (KV damage_type=pure, spell_immunity=enemies_yes => pierces=true, dispellable=nil => none, consistent). Note KV basic_dispel=1 is th..." },
+    ["modifier_kunkka_torrent_stun"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="basic", delivery="spell", positional=true, primary_harm="disable", timing="pre_cast", lotus_reflectable=false, severity="survivable",
+        note="Torrent is a placed ground AoE (250 radius) with a 1.6s arming delay that erupts to knock up + stun 1.4s + slow + damage. Liquipedia confirms place..." },
+    ["modifier_kunkka_torrent_thinker"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="basic", delivery="spell", positional=true, primary_harm="disable", timing="pre_cast", lotus_reflectable=false, severity="survivable",
+        note="The thinker is the placed-AoE timer entity that arms the Torrent before eruption; it represents the same incoming Torrent threat as the stun sub-mo..." },
+    ["modifier_kunkka_x_marks_the_spot"] = { school="magical", damage_type="none", pierces_spell_immunity=false, dispellable="none", delivery="spell", targeted=true, primary_harm="displacement", timing="pre_cast", severity="survivable", add_kinds={"reflect_target"},
+        note="X Marks marks an enemy and teleports them back to the X after ~3s; no damage, no disable -> primary_harm=displacement, damage_type=none, school=mag..." },
+    ["modifier_largo_catchy_lick"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="none", delivery="spell", targeted=true, primary_harm="damage", timing="pre_cast", severity="survivable",
+        note="Catchy Lick is a single-target unit-targeted magical nuke (85-340) that also yanks the target a short distance toward Largo and applies a basic dis..." },
+    ["modifier_largo_catchy_lick_knockback"] = { school="magical", damage_type="none", pierces_spell_immunity=false, dispellable="none", delivery="spell", targeted=true, primary_harm="displacement", timing="pre_cast", lotus_reflectable=false, severity="survivable",
+        note="The knockback sub-modifier is the short forced pull (235-325u toward Largo, locks facing per Liquipedia). It deals no damage of its own (the damage..." },
+    ["modifier_largo_croak_of_genius_debuff"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="basic", delivery="spell", primary_harm="damage", timing="post_apply", lotus_reflectable=false, severity="survivable",
+        note="Croak of Genius is cast on a friendly ally (buff); this debuff is the ENEMY-side reverberate effect: when the buffed ally deals spell damage, the e..." },
+    ["modifier_largo_frogstomp_debuff"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="none", delivery="spell", positional=true, primary_harm="damage", timing="pre_cast", lotus_reflectable=false, zone_outlasts_cyclone=true, severity="survivable",
+        note="Frogstomp is a point/area-targeted placed AoE (350 radius) that tosses froglings dealing magical damage over 4-7 stomp ticks at 1s intervals (zone ..." },
+    ["modifier_legion_commander_intimidate_slow"] = { school="magical", damage_type="none", pierces_spell_immunity=false, dispellable="basic", delivery="spell", primary_harm="disable", timing="post_apply", lotus_reflectable=false, severity="survivable",
+        note="CONFLICT: Auto-map points ab to legion_commander_press_the_attack, but the slow actually comes from the innate legion_commander_intimidate (lib/abi..." },
+    ["modifier_leshrac_split_earth"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="strong", delivery="spell", primary_harm="disable", timing="pre_cast", lotus_reflectable=false, severity="lethal",
+        note="Ground-targeted point AoE that stuns for 2s and deals magical damage with a ~0.35s arming delay after the cast animation, so you can react before t..." },
+    ["modifier_lich_chain_frost"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="basic", delivery="projectile_homing", primary_harm="damage", timing="at_impact", severity="lethal", drop_kinds={"displacement_blink"}, add_kinds={"dispel_basic", "dispel_strong"},
+        note="Bouncing ice projectile that re-targets between units (up to 10 bounces, 600 range) => delivery=projectile_homing. KV magical/enemies_no => school=..." },
+    ["modifier_lich_sinister_gaze"] = { school="magical", damage_type="none", pierces_spell_immunity=false, dispellable="basic", delivery="channel", targeted=true, primary_harm="disable", timing="mid_channel", severity="survivable",
+        note="Unit-target channelled disable: applies Cannot Act, hypnotizes the target and forces it to move toward a midpoint between Lich and target while dra..." },
+    ["modifier_lone_druid_entangle_effect"] = { school="magical", damage_type="magical", pierces_spell_immunity=true, dispellable="basic", delivery="attack", primary_harm="disable", timing="post_apply", lotus_reflectable=false, severity="survivable",
+        note="Attack-triggered passive root (after 5 stacks) that immobilizes and deals magical DoT (damage always sourced to Lone Druid). KV ab=lone_druid_spiri..." },
+    ["modifier_magnataur_shockwave_pull"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="none", delivery="projectile_line", primary_harm="damage", timing="at_impact", lotus_reflectable=false, severity="survivable",
+        note="Traveling line shockwave that nudges hit enemies ~150 units toward the wave centerline (a soft knockback-pull) and applies magical damage + slow. K..." },
+    ["modifier_magnataur_skewer_impact"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="basic", delivery="line_charge", primary_harm="displacement", timing="at_impact", lotus_reflectable=false, severity="survivable",
+        note="CONFLICT: ab field was empty; resolved to magnataur_skewer (lib/ability_data.lua line 736): damage_type=magical, spell_immunity=enemies_no, dispell..." },
+    ["modifier_magnataur_skewer_slow"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="basic", delivery="spell", primary_harm="disable", timing="post_apply", lotus_reflectable=false, severity="survivable",
+        note="CONFLICT: none (magnataur_skewer: magical, enemies_no, dispellable=yes) | The post-drag movement slow applied by Skewer. KV magical/enemies_no => s..." },
+    ["modifier_maledict"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="none", delivery="spell", primary_harm="damage", timing="post_apply", lotus_reflectable=false, severity="survivable",
+        note="Point-target AoE curse: applies a magical DoT to all enemy heroes in radius, with bonus bursts every 4s scaled to HP lost since the curse began. KV..." },
+    ["modifier_maledict_dot"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="none", delivery="spell", primary_harm="damage", timing="post_apply", debuff_sticks_to_self=true, lotus_reflectable=false, severity="survivable",
+        note="CONFLICT: Batch KV listed dt/si/disp as nil because ab was empty (unmapped). Resolved via lib/ability_data.lua witch_doctor_maledict (id 5140): dam..." },
+    ["modifier_marci_grapple"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="basic", delivery="spell", targeted=true, primary_harm="displacement", timing="pre_cast", severity="survivable",
+        note="CONFLICT: None. KV (marci_grapple): damage_type=magical, spell_immunity=enemies_no (pierces=false), dispellable=yes (basic), behavior=unit_target. ..." },
+    ["modifier_mars_arena_of_blood"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="none", delivery="spell", positional=true, primary_harm="disable", timing="pre_cast", blocks_forced_movement=true, zone_outlasts_cyclone=true, severity="survivable",
+        note="CONFLICT: None. KV (mars_arena_of_blood): damage_type=magical, spell_immunity=enemies_no (pierces=false), behavior=point+aoe. dispellable nil => no..." },
+    ["modifier_mars_gods_rebuke"] = { school="physical", damage_type="physical", pierces_spell_immunity=false, dispellable="none", delivery="spell", primary_harm="damage", timing="pre_cast", lotus_reflectable=false, severity="lethal", add_kinds={"damage_block"},
+        note="CONFLICT: None. KV (mars_gods_rebuke): damage_type=physical, behavior=point+normal_when_stolen, si/disp nil. school=physical, damage_type=physical,..." },
+    ["modifier_mars_spear"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="strong", delivery="projectile_line", primary_harm="disable", timing="at_impact", lotus_reflectable=false, severity="lethal",
+        note="CONFLICT: Minor: Liquipedia tooltip says 'dispellable only by death' for the pin, but KV (mars_spear) dispellable=yes_strong governs => dispellable..." },
+    ["modifier_medusa_gorgon_grasp"] = { school="physical", damage_type="physical", pierces_spell_immunity=false, dispellable="basic", delivery="spell", positional=true, primary_harm="disable", timing="pre_cast", lotus_reflectable=false, severity="survivable", add_kinds={"magic_immune"},
+        note="CONFLICT: None. KV (medusa_gorgon_grasp): damage_type=physical, spell_immunity=enemies_no (pierces=false), dispellable=yes (basic), behavior=aoe+po..." },
+    ["modifier_medusa_mystic_snake"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="none", delivery="spell", targeted=true, primary_harm="damage", timing="pre_cast", severity="survivable",
+        note="CONFLICT: None. KV (medusa_mystic_snake): damage_type=magical, spell_immunity=enemies_no (pierces=false), behavior=unit_target. dispellable nil => ..." },
+    ["modifier_meepo_earthbind"] = { school="magical", damage_type="none", pierces_spell_immunity=false, dispellable="basic", delivery="spell", positional=true, primary_harm="disable", timing="pre_cast", lotus_reflectable=false, severity="survivable",
+        note="CONFLICT: None. KV (meepo_earthbind): damage_type nil (no damage => damage_type=none, school=magical for the no-damage magical root), spell_immunit..." },
+    ["modifier_monkey_king_wukongs_command_aura"] = { school="physical", damage_type="physical", pierces_spell_immunity=false, dispellable="none", delivery="attack", positional=true, primary_harm="damage", timing="reactive", lotus_reflectable=false, zone_outlasts_cyclone=true, severity="survivable",
+        note="KV: physical, no si (physical attacks do not pierce), no dispel. Liquipedia: placed self-centered ring of soldiers (300/750 radius) that auto-attac..." },
+    ["modifier_morphling_adaptive_strike_agi"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="none", delivery="projectile_homing", primary_harm="disable", timing="at_impact", severity="survivable",
+        note="CONFLICT: KV disp=nil (none); Liquipedia notes stun is strong-dispellable, but authoritative KV is used so dispellable=none. | KV: magical, enemies..." },
+    ["modifier_muerta_dead_shot"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="basic", delivery="projectile_line", primary_harm="damage", timing="at_impact", severity="survivable", add_kinds={"dispel_basic", "dispel_strong"},
+        note="KV: magical, enemies_no (no pierce), disp=yes (basic), vector_targeting. Liquipedia: vector-targeted line trickshot (speed 2000) dealing 100-325 ma..." },
+    ["modifier_naga_siren_song_of_the_siren"] = { school="magical", damage_type="none", pierces_spell_immunity=false, dispellable="none", delivery="spell", primary_harm="disable", timing="pre_cast", lotus_reflectable=false, severity="survivable",
+        note="CONFLICT: KV disp=no (none); Liquipedia text says sleep is dispellable, but authoritative KV (dispellable=no) is used, so dispellable=none and no d..." },
+    ["modifier_necrolyte_heartstopper_aura_effect"] = { school="magical", damage_type="magical", pierces_spell_immunity=true, dispellable="none", delivery="spell", primary_harm="damage", timing="reactive", lotus_reflectable=false, severity="survivable",
+        note="KV: magical, enemies_yes (PIERCES spell immunity), disp=no. Liquipedia confirms it pierces debuff immunity and is only dispellable by death. Low-im..." },
+    ["modifier_necrolyte_reapers_scythe"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="none", delivery="spell", targeted=true, primary_harm="damage", timing="pre_cast", severity="lethal",
+        note="KV: magical, enemies_no (no pierce), disp=no. Liquipedia: unit-targeted single-target nuke, 1.5s stun, magical damage scaling with MISSING health (..." },
+    ["modifier_nevermore_requiem"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="basic", delivery="spell", primary_harm="damage", timing="pre_cast", lotus_reflectable=false, severity="survivable", add_kinds={"dispel_basic", "dispel_strong"},
+        note="CONFLICT: Batch line listed empty fields, but the real ability_data.lua entry 'nevermore_requiem' (line 852) has damage_type=magical, spell_immunit..." },
+    ["modifier_night_stalker_void"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="basic", delivery="spell", targeted=true, primary_harm="damage", timing="pre_cast", severity="survivable", add_kinds={"dispel_basic", "dispel_strong"},
+        note="KV: magical, enemies_no (no pierce), disp=yes (basic), unit_target. Liquipedia: unit-targeted instant nuke (80-320 magical) + 50% MS/AS slow (+0.1s..." },
+    ["modifier_nyx_assassin_impale"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="strong", delivery="projectile_line", primary_harm="disable", timing="at_impact", lotus_reflectable=false, severity="survivable",
+        note="CONFLICT: none. KV magical / enemies_no (no pierce) / yes_strong matches Liquipedia. | Magical line skillshot, stun-dominant (primary_harm=disable ..." },
+    ["modifier_nyx_assassin_vendetta"] = { school="pure", damage_type="pure", pierces_spell_immunity=true, dispellable="none", delivery="spell", primary_harm="damage", timing="pre_cast", lotus_reflectable=false, severity="lethal",
+        note="CONFLICT: none. KV pure / enemies_yes (pierces) / none / immediate+no_target matches Liquipedia self-cast alpha-strike. | Self-buff invisibility wh..." },
+    ["modifier_obsidian_destroyer_astral_imprisonment"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="none", delivery="spell", targeted=true, primary_harm="disable", timing="pre_cast", severity="survivable",
+        note="CONFLICT: none. KV magical / enemies_no (no pierce) / dispellable=no (=none) matches Liquipedia. | Single-target instant banish-disable. primary_ha..." },
+    ["modifier_obsidian_destroyer_sanity_eclipse"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="none", delivery="spell", primary_harm="damage", timing="pre_cast", lotus_reflectable=false, severity="lethal",
+        note="CONFLICT: none. KV magical / enemies_no (no pierce) / disp=nil (=none) matches Liquipedia point-AoE burst. | Instant point-AoE magical burst (no li..." },
+    ["modifier_ogre_magi_fireblast"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="strong", delivery="spell", targeted=true, primary_harm="disable", timing="pre_cast", severity="survivable", add_kinds={"dispel_strong"},
+        note="CONFLICT: none. KV magical / enemies_no (no pierce) / yes_strong matches Liquipedia. | Single-target instant stun (primary_harm=disable -> no magic..." },
+    ["modifier_omniknight_hammer_of_purity"] = { school="physical", damage_type="pure", pierces_spell_immunity=true, dispellable="basic", delivery="attack", targeted=true, primary_harm="damage", timing="reactive", lotus_reflectable=false, severity="survivable",
+        note="CONFLICT: none. KV pure / enemies_yes (pierces) / yes (=basic) / autocast+attack+ignore_silence matches Liquipedia attack-modifier. | Attack-delive..." },
+    ["modifier_oracle_fortunes_end_channel_target"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="basic", delivery="channel", primary_harm="disable", timing="mid_channel", lotus_reflectable=false, severity="survivable", drop_kinds={"displacement_far", "displacement_perp", "displacement_blink"}, add_kinds={"invuln", "magic_immune"},
+        note="CONFLICT: KV spell_immunity=enemies_no (harmful root does NOT pierce) vs Liquipedia 'pierces conditionally' (True-Sight-only). KV is authoritative ..." },
+    ["modifier_oracle_fortunes_end_purge"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="basic", delivery="spell", primary_harm="disable", timing="post_apply", lotus_reflectable=false, severity="survivable", drop_kinds={"magic_immune"},
+        note="CONFLICT: none for save purposes. KV row is empty (ab=''); inherits parent ability oracle_fortunes_end: magical / enemies_no (no pierce) / yes (=ba..." },
+    ["modifier_oracle_purifying_flames"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="basic", delivery="spell", targeted=true, primary_harm="damage", timing="pre_cast", severity="survivable",
+        note="KV magical/enemies_no(no-pierce)/basic-dispel/unit_target. Single-target instant magical nuke -> delivery=spell, targeted, pre_cast. invuln (pre_ca..." },
+    ["modifier_pangolier_gyroshell"] = { school="physical", damage_type="physical", pierces_spell_immunity=false, dispellable="none", delivery="homing_charge", primary_harm="disable", timing="at_impact", severity="survivable",
+        note="KV physical/enemies_no/disp=no/no_target ult. Harm comes from a steerable pursuing roll that bounces and re-acquires -> delivery=homing_charge, tim..." },
+    ["modifier_pangolier_swashbuckle"] = { school="physical", damage_type="physical", pierces_spell_immunity=true, dispellable="none", delivery="line_charge", primary_harm="damage", timing="at_impact", severity="survivable",
+        note="KV physical/enemies_yes(PIERCES)/disp=nil(none)/point+vector_targeting dash. Self-displacing line dash that strikes along a line -> delivery=line_c..." },
+    ["modifier_phantom_assassin_stiflingdagger"] = { school="physical", damage_type="physical", pierces_spell_immunity=false, dispellable="basic", delivery="projectile_homing", primary_harm="damage", timing="at_impact", severity="survivable", add_kinds={"invuln"},
+        note="CONFLICT: KV dispellable=yes (basic), si=nil so does NOT pierce (false) - both consistent with Liquipedia; no conflict. | KV physical/no-pierce/bas..." },
+    ["modifier_phantom_lancer_spirit_lance"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="basic", delivery="projectile_homing", targeted=true, primary_harm="damage", timing="at_impact", severity="survivable",
+        note="KV magical/enemies_no(no-pierce)/basic-dispel/unit_target. Unit-target homing magical projectile -> delivery=projectile_homing, at_impact, primary_..." },
+    ["modifier_phoenix_sun_ray"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="none", delivery="channel", primary_harm="damage", timing="mid_channel", severity="survivable",
+        note="CONFLICT: KV behavior lacks an explicit channelled flag (listed as point), but Liquipedia confirms it is a sustained, interruptible beam; modeled a..." },
+    ["modifier_primal_beast_onslaught"] = { school="physical", damage_type="physical", pierces_spell_immunity=false, dispellable="basic", delivery="line_charge", primary_harm="disable", timing="at_impact", severity="survivable",
+        note="CONFLICT: Liquipedia summary phrased the stun as 'Strong Dispel'; KV is authoritative and says dispellable=yes (basic). Resolved to basic. Moot for..." },
+    ["modifier_primal_beast_pulverize"] = { school="magical", damage_type="magical", pierces_spell_immunity=true, dispellable="none", delivery="channel", targeted=true, primary_harm="disable", timing="mid_channel", severity="lethal",
+        note="KV magical/enemies_yes(PIERCES)/disp=nil(none)/channelled+unit_target. Single-target lockdown channel -> delivery=channel, timing=mid_channel, prim..." },
+    ["modifier_puck_dream_coil"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="none", delivery="spell", positional=true, primary_harm="disable", timing="pre_cast", forced_leash=true, lotus_reflectable=false, zone_outlasts_cyclone=true, severity="lethal", drop_kinds={"displacement_perp", "displacement_far", "displacement_blink"},
+        note="KV: magical, enemies_no (no pierce), disp=no. Liquipedia: placed AoE coil that leashes all heroes in radius and stuns only if you move 600+ away (f..." },
+    ["modifier_puck_waning_rift"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="basic", delivery="spell", primary_harm="disable", timing="pre_cast", lotus_reflectable=false, severity="survivable",
+        note="KV: magical, enemies_no (no pierce), disp=yes (basic). Liquipedia: instant self-blink AoE silence + damage, no persistent zone. primary_harm=disabl..." },
+    ["modifier_rattletrap_hookshot"] = { school="magical", damage_type="magical", pierces_spell_immunity=true, dispellable="strong", delivery="projectile_line", primary_harm="disable", timing="at_impact", lotus_reflectable=false, severity="lethal",
+        note="KV: magical, enemies_yes (PIERCES), disp=yes_strong. Liquipedia: a line hook (point-targeted skillshot) that latches the first enemy hit, pulls Clo..." },
+    ["modifier_razor_eye_of_the_storm_armor"] = { school="physical", damage_type="physical", pierces_spell_immunity=true, dispellable="none", delivery="spell", primary_harm="damage", timing="post_apply", lotus_reflectable=false, zone_outlasts_cyclone=true, severity="survivable",
+        note="KV: physical, enemies_yes (PIERCES), disp=no, no_target+immediate. This modifier is the per-strike armor-reduction debuff. Liquipedia: persistent ~..." },
+    ["modifier_razor_plasma_field_slow"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="basic", delivery="spell", primary_harm="damage", timing="post_apply", lotus_reflectable=false, severity="survivable",
+        note="KV: magical, enemies_no (no pierce), disp=yes (basic). This is the slow debuff modifier. Liquipedia: self-centered expanding/contracting wave (~2.2..." },
+    ["modifier_razor_storm_surge_slow"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="none", delivery="spell", primary_harm="damage", timing="reactive", lotus_reflectable=false, severity="survivable",
+        note="CONFLICT: ab KV has si=nil and disp=nil; per the rules nil spell_immunity defaults to no-pierce (pierces=false) and nil dispellable => none. No con..." },
+    ["modifier_riki_smoke_screen"] = { school="magical", damage_type="none", pierces_spell_immunity=false, dispellable="none", delivery="spell", positional=true, primary_harm="disable", timing="pre_cast", lotus_reflectable=false, zone_outlasts_cyclone=true, severity="survivable", drop_kinds={"displacement_perp", "displacement_far", "displacement_blink"},
+        note="KV: dt=nil (no damage), enemies_no (no pierce), disp=no. Liquipedia: placed AoE smoke cloud, persistent ~6s (zone_outlasts_cyclone), silence + miss..." },
+    ["modifier_ringmaster_impalement"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="basic", delivery="projectile_line", primary_harm="damage", timing="at_impact", lotus_reflectable=false, severity="survivable",
+        note="KV: magical, enemies_no (no pierce), disp=yes (basic), behavior=point. Liquipedia: line dagger skillshot (directional projectile) that hits the fir..." },
+    ["modifier_ringmaster_the_box"] = { school="none", damage_type="none", pierces_spell_immunity=false, dispellable="basic", delivery="spell", primary_harm="disable", timing="post_apply", lotus_reflectable=false, enemy_self_buff=true, severity="survivable",
+        note="Escape Act / The Box (ringmaster_the_box, KV target_team={friendly}, dt=nil, si=enemies_no, disp=yes, beh=unit_target+ignore_backswing) is cast ONL..." },
+    ["modifier_ringmaster_wheel"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="none", delivery="spell", positional=true, primary_harm="damage", timing="post_apply", lotus_reflectable=false, zone_outlasts_cyclone=true, severity="survivable",
+        note="Wheel of Wonder (ringmaster_wheel, KV dt=magical, si=enemies_no, disp=no, beh=point+aoe): point-cast wheel rolls to a location then leaves a persis..." },
+    ["modifier_rubick_fade_bolt_debuff"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="basic", delivery="spell", targeted=true, primary_harm="damage", timing="post_apply", severity="survivable",
+        note="Fade Bolt (rubick_fade_bolt, KV dt=magical, si=enemies_no, disp=yes=basic, beh=unit_target): unit-targeted projectile that bounces between enemies,..." },
+    ["modifier_rubick_telekinesis_stun"] = { school="magical", damage_type="none", pierces_spell_immunity=false, dispellable="strong", delivery="spell", targeted=true, primary_harm="disable", timing="pre_cast", severity="lethal",
+        note="Telekinesis (rubick_telekinesis, KV dt=nil=none, si=enemies_no -> does NOT pierce, disp=yes_strong, beh=ignore_backswing+unit_target): instant unit..." },
+    ["modifier_sand_king_epicenter"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="none", delivery="spell", positional=true, primary_harm="damage", timing="post_apply", lotus_reflectable=false, zone_outlasts_cyclone=true, severity="survivable",
+        note="Epicenter (sandking_epicenter, KV dt=magical, si=enemies_no, disp=no, beh=no_target+ignore_backswing): no-target self-centered persistent pulsing A..." },
+    ["modifier_sandking_burrowstrike"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="strong", delivery="projectile_line", primary_harm="disable", timing="at_impact", lotus_reflectable=false, severity="lethal",
+        note="Burrowstrike (sandking_burrowstrike, KV dt=magical, si=enemies_no -> does NOT pierce, disp=yes_strong, beh=point+root_disables+alt_castable): point..." },
+    ["modifier_shadow_demon_demonic_purge"] = { school="magical", damage_type="magical", pierces_spell_immunity=true, dispellable="none", delivery="spell", targeted=true, primary_harm="damage", timing="pre_cast", severity="lethal",
+        note="CONFLICT: KV modifier disp=no (debuff not self-dispellable) while some guides note Demonic Purge applies a basic dispel and the slow is dispellable..." },
+    ["modifier_shadow_demon_disruption"] = { school="magical", damage_type="none", pierces_spell_immunity=false, dispellable="none", delivery="spell", targeted=true, primary_harm="disable", timing="pre_cast", severity="survivable",
+        note="Disruption (shadow_demon_disruption, KV dt=nil=none, si=enemies_no -> does NOT pierce, disp=no, beh=unit_target+dont_resume_attack): instant unit-t..." },
+    ["modifier_shredder_chakram"] = { school="pure", damage_type="pure", pierces_spell_immunity=false, dispellable="none", delivery="projectile_line", primary_harm="damage", timing="at_impact", lotus_reflectable=false, severity="survivable",
+        note="Pure damage (KV dt=pure) -> no magic_immune, no magic_barrier (decoupled magical branches do not fire). Not dispellable (disp=no) -> no dispel. Poi..." },
+    ["modifier_silencer_last_word"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="basic", delivery="spell", targeted=true, primary_harm="disable", timing="pre_cast", severity="survivable", add_kinds={"dispel_basic", "dispel_strong"},
+        note="Unit-targeted magical disable (silence) with token damage -> primary_harm=disable, so magic_barrier correctly suppressed (gated on primary_harm==da..." },
+    ["modifier_skeleton_king_reincarnate_slow"] = { school="magical", damage_type="none", pierces_spell_immunity=false, dispellable="basic", delivery="spell", primary_harm="disable", timing="post_apply", lotus_reflectable=false, severity="survivable",
+        note="No-damage movement/attack slow -> school=magical (BKB blocks per enemies_no, like other no-damage magical disables), damage_type=none (so no magic_..." },
+    ["modifier_skeleton_king_reincarnation_spawn_skeletons"] = { school="none", damage_type="none", pierces_spell_immunity=false, dispellable="none", delivery="spell", primary_harm="disable", timing="post_apply", lotus_reflectable=false, severity="survivable",
+        note="CONFLICT: empty-ab: KV ab field was empty (not auto-mapped). Resolved via skeleton_king_reincarnation (id 5089) shard_skeleton_count; this modifier..." },
+    ["modifier_skywrath_mage_ancient_seal"] = { school="magical", damage_type="none", pierces_spell_immunity=false, dispellable="basic", delivery="spell", targeted=true, primary_harm="disable", timing="pre_cast", severity="survivable", add_kinds={"dispel_basic", "dispel_strong"},
+        note="No-damage unit-targeted silence/magic-amp -> school=magical, damage_type=none (so no magic_barrier, correctly). magic_immune (school=magical + deli..." },
+    ["modifier_skywrath_mage_concussive_shot_slow"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="basic", delivery="projectile_homing", primary_harm="disable", timing="post_apply", lotus_reflectable=false, severity="survivable", drop_kinds={"displacement_blink"},
+        note="Homing projectile that re-acquires -> delivery=projectile_homing, no_target -> targeted=false (not Lotus-reflectable). Modifier is the slow debuff ..." },
+    ["modifier_skywrath_mage_mystic_flare_thinker"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="none", delivery="spell", positional=true, primary_harm="damage", timing="at_impact", lotus_reflectable=false, severity="lethal",
+        note="Placed persistent magical-damage AoE zone -> positional=true, targeted=false, delivery=spell, primary_harm=damage. Zone duration 2s < 2.5s cyclone ..." },
+    ["modifier_skywrath_mystic_flare_aura_effect"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="none", delivery="spell", positional=true, primary_harm="damage", timing="at_impact", lotus_reflectable=false, severity="lethal",
+        note="Same Mystic Flare zone as the thinker modifier (identical KV: magical, enemies_no, point+aoe). Persistent magical-damage zone -> positional=true, t..." },
+    ["modifier_slardar_amplify_damage"] = { school="magical", damage_type="none", pierces_spell_immunity=true, dispellable="basic", delivery="spell", targeted=true, primary_harm="disable", timing="pre_cast", severity="survivable",
+        note="CONFLICT: none. KV dt=nil/si=enemies_yes/disp=yes matches Liquipedia (no-damage debuff, pierces immunity, basic dispel). | No-damage magical disabl..." },
+    ["modifier_slardar_slithereen_crush"] = { school="physical", damage_type="physical", pierces_spell_immunity=false, dispellable="strong", delivery="spell", primary_harm="disable", timing="at_impact", severity="survivable",
+        note="CONFLICT: none. KV dt=physical/si=enemies_no/disp=yes_strong matches Liquipedia (physical self-AoE stun, no pierce, strong dispel). | Instant no-ta..." },
+    ["modifier_snapfire_lil_shredder_debuff"] = { school="physical", damage_type="physical", pierces_spell_immunity=false, dispellable="none", delivery="attack", primary_harm="disable", timing="reactive", enemy_self_buff=true, attack_enabler=true, severity="survivable",
+        note="CONFLICT: none. KV dt=physical/si=nil/disp=nil matches Liquipedia (physical attack-driven, no pierce, non-dispellable armor-shred). si=nil treated ..." },
+    ["modifier_snapfire_magma_burn_slow"] = { school="magical", damage_type="none", pierces_spell_immunity=false, dispellable="none", delivery="spell", positional=true, primary_harm="disable", timing="post_apply", zone_outlasts_cyclone=true, severity="survivable",
+        note="CONFLICT: none for this modifier. KV (the slow component) dt=nil/si=nil/disp=nil => damage_type=none, pierces=false (si=nil=>enemies_no), dispellab..." },
+    ["modifier_snapfire_mortimer_kisses"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="basic", delivery="spell", positional=true, primary_harm="damage", timing="at_impact", zone_outlasts_cyclone=true, severity="lethal",
+        note="CONFLICT: none. KV dt=magical/si=enemies_no/disp=yes matches Liquipedia (magical AoE bombardment, no pierce, basic dispel). | Repositionable area b..." },
+    ["modifier_snapfire_scatterblast_slow"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="basic", delivery="projectile_line", primary_harm="damage", timing="at_impact", severity="survivable",
+        note="CONFLICT: none. KV dt=magical/si=enemies_no/disp=yes matches Liquipedia (magical cone nuke+slow, no pierce, basic dispel). | Directional cone/line ..." },
+    ["modifier_sniper_assassinate"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="none", delivery="spell", targeted=true, primary_harm="damage", timing="pre_cast", severity="lethal",
+        note="CONFLICT: Liquipedia notes 'Pierces Debuff Immunity conditionally', but KV si=enemies_no is authoritative => pierces_spell_immunity=false (base Ass..." },
+    ["modifier_spectre_spectral_dagger"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="basic", delivery="projectile_line", primary_harm="damage", timing="at_impact", lotus_reflectable=false, severity="survivable",
+        note="CONFLICT: none. KV dt=magical/si=nil/disp=yes matches Liquipedia (magical damage+slow, no pierce since si=nil=>enemies_no, basic dispel). lotus_ref..." },
+    ["modifier_spectre_spectral_dagger_in_path"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="basic", delivery="spell", positional=true, primary_harm="disable", timing="post_apply", lotus_reflectable=false, zone_outlasts_cyclone=true, severity="survivable",
+        note="CONFLICT: none. KV (ability spectre_spectral_dagger): damage_type=magical, no spell_immunity field (default no-pierce), dispellable=yes(basic). Mat..." },
+    ["modifier_spirit_breaker_nether_strike"] = { school="magical", damage_type="magical", pierces_spell_immunity=true, dispellable="strong", delivery="leap", targeted=true, primary_harm="disable", timing="pre_cast", severity="lethal",
+        note="CONFLICT: none. KV (spirit_breaker_nether_strike): damage_type=magical, spell_immunity=enemies_yes (pierces), dispellable=yes_strong (strong). Used..." },
+    ["modifier_templar_assassin_psionic_trap"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="basic", delivery="spell", positional=true, primary_harm="disable", timing="post_apply", lotus_reflectable=false, zone_outlasts_cyclone=true, severity="survivable",
+        note="CONFLICT: none. KV (templar_assassin_psionic_trap): damage_type=magical, spell_immunity=enemies_no (no-pierce), dispellable=yes(basic). Matches Liq..." },
+    ["modifier_tinker_laser"] = { school="pure", damage_type="pure", pierces_spell_immunity=false, dispellable="basic", delivery="spell", targeted=true, primary_harm="damage", timing="pre_cast", severity="survivable",
+        note="CONFLICT: none. KV (tinker_laser): damage_type=pure, spell_immunity=enemies_no (no-pierce), dispellable=yes(basic). Matches Liquipedia (pure + refl..." },
+    ["modifier_tiny_avalanche"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="strong", delivery="spell", primary_harm="damage", timing="at_impact", lotus_reflectable=false, severity="lethal",
+        note="CONFLICT: none on consumed fields. KV (tiny_avalanche): damage_type=magical, spell_immunity=enemies_no, dispellable=yes_strong. dispellable=strong ..." },
+    ["modifier_tiny_avalanche_stun"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="strong", delivery="spell", primary_harm="disable", timing="at_impact", lotus_reflectable=false, severity="survivable",
+        note="CONFLICT: KV-vs-Liquipedia FLAG: KV dispellable=yes_strong but Liquipedia states the avalanche stun is 'only dispellable by Death' (no strong dispe..." },
+    ["modifier_tiny_toss"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="none", delivery="spell", primary_harm="displacement", timing="pre_cast", lotus_reflectable=false, severity="lethal", add_kinds={"magic_barrier"},
+        note="CONFLICT: none on consumed fields. KV (tiny_toss): damage_type=magical, no spell_immunity field on ability (default no-pierce; Liquipedia 'pierces ..." },
+    ["modifier_troll_warlord_whirling_axes_ranged"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="basic", delivery="projectile_line", primary_harm="disable", timing="at_impact", lotus_reflectable=false, severity="survivable",
+        note="CONFLICT: none. KV (troll_warlord_whirling_axes_ranged): damage_type=magical, spell_immunity=enemies_no (no-pierce), dispellable=yes(basic). Matche..." },
+    ["modifier_tusk_snowball_target"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="none", delivery="homing_charge", primary_harm="disable", timing="at_impact", lotus_reflectable=false, severity="survivable",
+        note="Snowball is a homing charge (Tusk rolls TO the unit-targeted enemy and stops). KV: magical, enemies_no (does NOT pierce) => BKB blocks the stun (ma..." },
+    ["modifier_tusk_tag_team_attack_slow"] = { school="physical", damage_type="physical", pierces_spell_immunity=false, dispellable="none", delivery="spell", primary_harm="disable", timing="post_apply", lotus_reflectable=false, severity="survivable",
+        note="Tag Team's attack-speed slow is a low-impact, non-dispellable physical debuff applied by a no-target aura. KV: physical, enemies_no, dispellable=no..." },
+    ["modifier_tusk_tag_team_slow"] = { school="physical", damage_type="physical", pierces_spell_immunity=false, dispellable="none", delivery="spell", primary_harm="disable", timing="post_apply", lotus_reflectable=false, severity="survivable",
+        note="Same family as the attack_slow: a brief (0.5s) non-dispellable physical movement slow from a no-target aura. KV: physical, enemies_no, dispellable=..." },
+    ["modifier_tusk_walrus_punch_air_time"] = { school="physical", damage_type="none", pierces_spell_immunity=true, dispellable="basic", delivery="attack", primary_harm="disable", timing="post_apply", lotus_reflectable=false, severity="survivable", drop_kinds={"physical_immune", "damage_block", "invis", "displacement_far", "displacement_perp"},
+        note="KV: spell_immunity=enemies_yes => Walrus Punch air time PIERCES spell immunity, so BKB does NOT save (pierces=true blocks magic_immune, and damage_..." },
+    ["modifier_tusk_walrus_punch_slow"] = { school="physical", damage_type="none", pierces_spell_immunity=true, dispellable="basic", delivery="attack", primary_harm="disable", timing="post_apply", lotus_reflectable=false, severity="survivable", drop_kinds={"physical_immune", "damage_block", "invis", "displacement_far", "displacement_perp"},
+        note="Walrus Punch slow component, same mechanics as the air_time modifier. KV: enemies_yes => PIERCES BKB (no magic_immune; damage_type=nil=>none so no ..." },
+    ["modifier_undying_decay"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="none", delivery="spell", primary_harm="damage", timing="pre_cast", lotus_reflectable=false, severity="survivable",
+        note="KV: magical, enemies_no (does NOT pierce), dispellable=no. Instant point-target AoE => delivery=spell, targeted=false (AoE, not a single-unit refle..." },
+    ["modifier_vengefulspirit_nether_swap"] = { school="magical", damage_type="magical", pierces_spell_immunity=true, dispellable="basic", delivery="spell", targeted=true, primary_harm="displacement", timing="pre_cast", lotus_reflectable=false, severity="survivable",
+        note="KV: magical, enemies_yes => PIERCES BKB, dispellable=yes=>basic. The dominant threat is the forced position swap (being teleported into the enemy t..." },
+    ["modifier_vengefulspirit_retribution_tracker"] = { school="none", damage_type="none", pierces_spell_immunity=false, dispellable="none", delivery="spell", primary_harm="disable", timing="post_apply", lotus_reflectable=false, severity="survivable",
+        note="Retribution is an innate passive (behavior passive+not_learnable+innate_ui), not a real-time cast you defend against. KV: damage_type=nil=>none, sp..." },
+    ["modifier_venomancer_venomous_gale"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="basic", delivery="spell", primary_harm="damage", timing="post_apply", lotus_reflectable=false, severity="survivable",
+        note="CONFLICT: none - KV magical/enemies_no/yes(basic) matches Liquipedia. | Survivable magical DoT+slow. Modeled at the applied-debuff layer (delivery=..." },
+    ["modifier_viper_corrosive_skin_slow"] = { school="magical", damage_type="none", pierces_spell_immunity=false, dispellable="basic", delivery="spell", primary_harm="disable", timing="post_apply", lotus_reflectable=false, severity="survivable",
+        note="CONFLICT: none - KV magical/enemies_no/yes(basic) matches. damage_type=none used because this specific modifier is the attack-speed slow (the damag..." },
+    ["modifier_viper_nethertoxin"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="none", delivery="spell", positional=true, primary_harm="damage", timing="at_impact", lotus_reflectable=false, zone_outlasts_cyclone=true, severity="survivable",
+        note="CONFLICT: none - KV magical/enemies_no/nil(none)/point+aoe matches. dispellable=none (KV nil) so no dispel offered. | Placed persistent magical-DoT..." },
+    ["modifier_viper_nethertoxin_mute"] = { school="magical", damage_type="none", pierces_spell_immunity=false, dispellable="none", delivery="spell", positional=true, primary_harm="disable", timing="at_impact", lotus_reflectable=false, zone_outlasts_cyclone=true, severity="survivable",
+        note="CONFLICT: none - KV magical/enemies_no/nil(none) matches. damage_type=none because this modifier is the no-damage mute/break component. | No-damage..." },
+    ["modifier_viper_poison_attack_slow"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="basic", delivery="spell", primary_harm="disable", timing="post_apply", lotus_reflectable=false, severity="survivable",
+        note="CONFLICT: none - KV magical/enemies_no/yes(basic) matches. Modeled at debuff layer (delivery=spell) rather than delivery=attack: the threat is the ..." },
+    ["modifier_visage_grave_chill"] = { school="magical", damage_type="none", pierces_spell_immunity=false, dispellable="basic", delivery="spell", targeted=true, primary_harm="disable", timing="pre_cast", severity="survivable",
+        note="CONFLICT: none - KV nil(damage_type=none)/enemies_no/yes(basic)/unit_target matches. dt=nil => school=magical (it is a magical spell) with damage_t..." },
+    ["modifier_void_spirit_aether_remnant"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="basic", delivery="spell", primary_harm="displacement", timing="pre_cast", lotus_reflectable=false, severity="survivable",
+        note="CONFLICT: none - KV magical/enemies_no/yes(basic)/vector_targeting matches. pierces=false (the harmful pull does not pierce; only the True-Sight se..." },
+    ["modifier_void_spirit_astral_step"] = { school="magical", damage_type="magical", pierces_spell_immunity=true, dispellable="none", delivery="spell", primary_harm="damage", timing="at_impact", lotus_reflectable=false, severity="survivable",
+        note="CONFLICT: none - KV magical/enemies_YES(pierces)/nil(none) matches. si=enemies_yes => pierces_spell_immunity=true, so magic_immune correctly does N..." },
+    ["modifier_weaver_the_swarm"] = { school="physical", damage_type="physical", pierces_spell_immunity=false, dispellable="none", delivery="projectile_line", primary_harm="damage", timing="at_impact", debuff_sticks_to_self=true, lotus_reflectable=false, severity="survivable", drop_kinds={"invuln", "displacement_perp", "displacement_far", "displacement_blink"},
+        note="CONFLICT: none. KV physical / enemies_no / disp=no all consistent with Liquipedia (physical, no BKB pierce, undispellable). beh point+ignore_backsw..." },
+    ["modifier_windrunner_shackleshot"] = { school="magical", damage_type="none", pierces_spell_immunity=false, dispellable="strong", delivery="projectile_homing", primary_harm="disable", timing="at_impact", lotus_reflectable=false, severity="survivable", add_kinds={"invuln", "dispel_strong"},
+        note="CONFLICT: none. KV dt=nil (damage_type=none, no-damage magical disable => school=magical), enemies_no=>pierces false, disp=yes_strong=>strong, beha..." },
+    ["modifier_winter_wyvern_winters_curse"] = { school="magical", damage_type="none", pierces_spell_immunity=true, dispellable="none", delivery="spell", targeted=true, primary_harm="disable", timing="pre_cast", severity="survivable",
+        note="CONFLICT: none. KV dt=nil (no-damage => damage_type=none, school=magical), enemies_yes=>pierces true (Liquipedia 'pierces debuff immunity condition..." },
+    ["modifier_witch_doctor_maledict"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="none", delivery="spell", primary_harm="damage", timing="post_apply", debuff_sticks_to_self=true, lotus_reflectable=false, severity="survivable",
+        note="CONFLICT: none. KV magical / enemies_no / disp=no / behavior aoe+point all match Liquipedia (magical damage, no BKB pierce, undispellable, AoE cast..." },
+}
+
+-- v0.5.x counter-axis migration: the pre-migration hand-authored counter lists,
+-- retained ONLY for the behavior-change ledger + demo verification. Deleted once
+-- the demo passes (Task 9). THREAT_COUNTER below is now ASSEMBLED, not this literal.
+ThreatData.THREAT_COUNTER_LEGACY = {
     -- Entity-targeted spells: position doesn't matter, displacement useless
     modifier_bane_nightmare              = { "invuln", "magic_immune", "dispel_basic", "reflect_target" },
     modifier_lion_voodoo                 = { "invuln", "magic_immune", "reflect_target" },
@@ -281,9 +718,9 @@ ThreatData.THREAT_COUNTER = {
     -- v6.15.10: Disruptor Kinetic Field. The wall blocks forced movement
     -- (Pike, Force, Blink) entirely - only knockback motion crosses it.
     -- User-observed in 7.41C. (verify modifier name - likely
-    -- modifier_disruptor_kinetic_field_remnant once empirically confirmed
+    -- modifier_disruptor_kinetic_field once empirically confirmed
     -- via modseen.)
-    modifier_disruptor_kinetic_field_remnant = { "displacement_perp" },
+    modifier_disruptor_kinetic_field = { "displacement_perp" },
     -- v6.15.256: Underlord Pit of Malice. 400u-radius (500u with shard)
     -- snare pit, re-snares every 3.6s for 12s; each snare is a 1.5-1.8s
     -- root. Same escape profile as Kinetic Field: only knockback motion
@@ -578,7 +1015,7 @@ ThreatData.THREATS_ON_SELF = {
     modifier_life_stealer_open_wounds    = { role = "physical_burst", save = "manta_or_pike" },        -- (verify) - debuff
     modifier_pugna_life_drain            = { role = "drain",         save = "force_or_pike" },         -- (verify) - channel
     -- v6.15.10: Disruptor Kinetic Field - trapped. Only knockback escapes.
-    modifier_disruptor_kinetic_field_remnant = { role = "trapped",   save = "knockback_only" },         -- (verify)
+    modifier_disruptor_kinetic_field = { role = "trapped",   save = "knockback_only" },         -- (verify)
     -- v6.15.256: Underlord Pit of Malice - same trapped pattern as Kinetic
     -- Field. Snare ticks ~3.6s for 12s; escape via displacement breaks the
     -- root and removes Sniper from the 400u pit area.
@@ -838,7 +1275,7 @@ ThreatData.ABILITY_TO_THREAT = {
     treant_overgrowth                   = "modifier_treant_overgrowth",                -- (verify)
     life_stealer_open_wounds            = "modifier_life_stealer_open_wounds",         -- (verify)
     pugna_life_drain                    = "modifier_pugna_life_drain",                 -- (verify)
-    disruptor_kinetic_field             = "modifier_disruptor_kinetic_field_remnant",  -- (verify) - v6.15.10
+    disruptor_kinetic_field             = "modifier_disruptor_kinetic_field",  -- (verify) - v6.15.10
     abyssal_underlord_pit_of_malice     = "modifier_abyssal_underlord_pit_of_malice_ensare",   -- (verify) - v6.15.256
     -- v6.15.258 zero-coverage fill batch 1
     dragon_knight_dragon_tail           = "modifier_dragon_knight_dragon_tail",          -- (verify) - v6.15.258
@@ -992,30 +1429,28 @@ ThreatData.RECOMMENDED_SAVES = {
     -- Wind Waker is a strict Eul upgrade (3.5s vs 2.5s, can-act-during).
     modifier_bane_nightmare = {
         "item_cyclone", "item_wind_waker", "item_lotus_orb", "item_manta",
-        "item_black_king_bar", "item_aeon_disk",
+        "item_black_king_bar",
     },
     modifier_lion_voodoo = {
         "item_lotus_orb", "item_black_king_bar", "item_cyclone", "item_wind_waker",
-        "item_aeon_disk",
     },
     modifier_lion_finger_of_death = {
         -- magic_barrier (Pipe of Insight) absorbs a lot of the burst.
         -- v6.7: Eternal Shroud removed in 7.41 - was previously listed here.
         "item_lotus_orb", "item_black_king_bar", "item_cyclone", "item_wind_waker",
-        "item_aeon_disk", "item_pipe_of_insight",
+         "item_pipe",
     },
     modifier_lina_laguna_blade = {
         "item_lotus_orb", "item_black_king_bar", "item_cyclone", "item_wind_waker",
-        "item_aeon_disk", "item_pipe_of_insight",
+         "item_pipe",
     },
     modifier_naga_siren_ensnare = {
         -- pierces BKB
         "item_cyclone", "item_wind_waker", "item_lotus_orb", "item_manta",
-        "item_satanic", "item_disperser", "item_aeon_disk",
+        "item_satanic", "item_disperser",
     },
     modifier_doom_bringer_doom = {
         "item_lotus_orb", "item_black_king_bar", "item_cyclone", "item_wind_waker",
-        "item_aeon_disk",
     },
     -- Channel-tethers: prefer cheap displacement, fall through to dispel/invuln.
     -- Blink always works (1200u >> any tether).
@@ -1046,18 +1481,18 @@ ThreatData.RECOMMENDED_SAVES = {
         -- Pike (425) / Force (600) sometimes break; Blink always breaks.
         "item_hurricane_pike", "item_force_staff", "item_blink",
         "item_black_king_bar", "item_cyclone", "item_wind_waker",
-        "item_pipe_of_insight",
+        "item_pipe",
     },
     -- Homing charges: displacement USELESS on self (re-targets). Need
     -- invuln/immune at impact. grenade_at_caster knocks the charger and
     -- cancels the modifier - that's the cheap option for Sniper.
     modifier_spirit_breaker_charge_of_darkness = {
         "item_black_king_bar", "item_cyclone", "item_wind_waker", "item_lotus_orb",
-        "item_manta", "item_aeon_disk", "item_ghost",
+        "item_manta", "item_ghost",
     },
     modifier_tusk_snowball_movement = {
         "item_black_king_bar", "item_cyclone", "item_wind_waker",
-        "item_manta", "item_aeon_disk",
+        "item_manta",
     },
     -- v6.15.162: Kez Grappling Claw. The 80% slow is the danger (Sniper
     -- can't kite). Eul / Wind Waker fully dodge the swing-in + the landing
@@ -1067,7 +1502,7 @@ ThreatData.RECOMMENDED_SAVES = {
         -- v6.15.261: hero-agnostic.
         "item_cyclone", "item_wind_waker", "item_black_king_bar",
         "item_hurricane_pike", "item_force_staff",
-        "item_manta", "item_aeon_disk",
+        "item_manta",
     },
     -- Delayed AoEs: displacement works (target the EFFECT, not the entity)
     modifier_lina_light_strike_array = {
@@ -1084,7 +1519,7 @@ ThreatData.RECOMMENDED_SAVES = {
     modifier_crystal_maiden_freezing_field = {
         -- v6.15.261: hero-agnostic.
         "item_black_king_bar", "item_hurricane_pike", "item_force_staff",
-        "item_blink", "item_pipe_of_insight",
+        "item_blink", "item_pipe",
     },
     -- Line projectiles: perpendicular displacement
     modifier_pudge_meat_hook = {
@@ -1151,37 +1586,37 @@ ThreatData.RECOMMENDED_SAVES = {
     -- v6.7 extrapolation entries
     modifier_shadow_shaman_voodoo = {
         "item_lotus_orb", "item_black_king_bar", "item_cyclone", "item_wind_waker",
-        "item_aeon_disk", "item_manta",
+         "item_manta",
     },
     modifier_zuus_lightning_bolt = {
         "item_lotus_orb", "item_black_king_bar", "item_cyclone", "item_wind_waker",
-        "item_aeon_disk", "item_pipe_of_insight",
+         "item_pipe",
     },
     modifier_zuus_thundergods_wrath = {
         -- Global ult, 2s cast point. NOT reflectable (AoE, not single-target).
-        "item_black_king_bar", "item_cyclone", "item_wind_waker", "item_aeon_disk",
-        "item_pipe_of_insight",
+        "item_black_king_bar", "item_cyclone", "item_wind_waker",
+        "item_pipe",
     },
     modifier_tidehunter_ravage = {
         "item_black_king_bar", "item_blink", "item_arcane_blink", "item_swift_blink",
-        "item_cyclone", "item_wind_waker", "item_manta", "item_aeon_disk",
-        "item_pipe_of_insight",
+        "item_cyclone", "item_wind_waker", "item_manta",
+        "item_pipe",
     },
     modifier_earthshaker_echo_slam = {
         "item_black_king_bar", "item_blink", "item_arcane_blink",
         "item_hurricane_pike", "item_force_staff", "item_cyclone",
-        "item_wind_waker", "item_pipe_of_insight",
+        "item_wind_waker", "item_pipe",
     },
     modifier_magnataur_reverse_polarity_stun = {
         -- 1700u radius. Only Blink (1200-1400) reliably escapes; BKB / Aeon
         -- carry through the stun.
         "item_blink", "item_arcane_blink", "item_black_king_bar",
-        "item_cyclone", "item_wind_waker", "item_aeon_disk",
+        "item_cyclone", "item_wind_waker",
     },
     modifier_disruptor_static_storm_thinker = {
         "item_hurricane_pike", "item_force_staff", "item_blink",
         "item_black_king_bar", "item_cyclone", "item_wind_waker",
-        "item_pipe_of_insight",
+        "item_pipe",
     },
     -- v6.15.10: Disruptor Kinetic Field. Wall blocks forced movement, blink,
     -- and cyclone displacement. Only KNOCKBACK crosses -- which no item
@@ -1190,7 +1625,7 @@ ThreatData.RECOMMENDED_SAVES = {
     -- inject knockback via *_THREAT_PATCHES. The dispatcher falls through to
     -- the trap category chain (blinks) if no patch is registered -- blinks
     -- also do not work against KF in practice, but the failure is silent.
-    modifier_disruptor_kinetic_field_remnant = {},
+    modifier_disruptor_kinetic_field = {},
     -- v6.15.256: Underlord Pit of Malice. Same trap escape posture as
     -- Kinetic Field; only hero-knockback escapes the snare reliably.
     -- v6.15.261: hero-agnostic empty chain; hero patches inject knockback.
@@ -1198,7 +1633,6 @@ ThreatData.RECOMMENDED_SAVES = {
     modifier_treant_overgrowth = {
         "item_black_king_bar", "item_blink", "item_swift_blink",
         "item_cyclone", "item_wind_waker", "item_manta",
-        "item_aeon_disk",
     },
     modifier_magnataur_skewer = {
         -- v6.15.261: hero-agnostic.
@@ -1249,11 +1683,17 @@ ThreatData.CATEGORY_CHAINS = {
     -- Chase / gap-close (Bara, Tusk, PA Strike, Slark Pounce, Storm Ball
     -- Lightning, Magnus Skewer/RP-prep, anything homing toward the hero).
     -- Pike-on-enemy radial-pushes them, Force pushes self, BKB blocks damage.
+    -- v0.5.x counter-axis enrichment: every defensive item poured in by
+    -- mechanic; the compose-time SaveCounters filter (defense.lua tier 3)
+    -- + run_chain_walk keep only the items that actually counter the live
+    -- threat, so over-listing is harmless. Order = priority within category.
     close_gap = {
         "item_hurricane_pike",
         "item_force_staff",
         "item_black_king_bar", "item_cyclone", "item_wind_waker",
-        "item_lotus_orb", "item_manta", "item_aeon_disk", "item_ghost",
+        "item_ghost", "item_blade_mail", "item_crimson_guard",
+        "item_solar_crest", "item_silver_edge", "item_invis_sword",
+        "item_lotus_orb", "item_manta", "item_phase_boots",
     },
     -- Tether channels on the hero (Pudge Dismember, Bane Grip, Shaman
     -- Shackles, WD Death Ward, Legion Duel, Pugna Life Drain -- anything
@@ -1262,20 +1702,28 @@ ThreatData.CATEGORY_CHAINS = {
     channel_on_self = {
         "item_hurricane_pike",
         "item_force_staff",
-        "item_manta", "item_satanic", "item_disperser",
-        "item_cyclone", "item_wind_waker", "item_aeon_disk",
+        "item_blink", "item_swift_blink", "item_arcane_blink",
+        "item_manta", "item_satanic", "item_disperser", "item_diffusal_blade",
+        "item_cyclone", "item_wind_waker",
+        -- physical "channels" (Omnislash, attack-driven locks): invuln misses,
+        -- attack-immunity / block / invis are the real answers.
+        "item_ghost", "item_crimson_guard", "item_blade_mail",
+        "item_glimmer_cape", "item_solar_crest",
     },
     -- Line projectiles (Mirana Arrow, Pudge Hook, Magnus Skewer, Sven Bolt,
     -- Earth Spirit Boulder). Perpendicular displacement breaks the line.
     line_projectile = {
         "item_force_staff", "item_hurricane_pike",
-        "item_cyclone", "item_manta", "item_black_king_bar",
+        "item_blink", "item_swift_blink", "item_arcane_blink",
+        "item_cyclone", "item_wind_waker", "item_manta",
+        "item_black_king_bar", "item_lotus_orb",
     },
     -- Single-target hard disable (Hex, Doom debuff cast, Lion Voodoo,
     -- Shaman Voodoo). Instant-cast invuln (Eul/Wind Waker/Lotus) ideal.
     targeted_disable = {
         "item_cyclone", "item_wind_waker", "item_lotus_orb",
-        "item_manta", "item_aeon_disk", "item_black_king_bar",
+        "item_manta", "item_disperser", "item_black_king_bar",
+        "item_blink", "item_swift_blink", "item_arcane_blink",
     },
     -- AoE lockdown ults (Tide Ravage, ES Echo Slam, Magnus RP, Naga Siren,
     -- Treant Overgrowth, Disruptor Static Storm). Blink/Pike out, BKB the
@@ -1284,41 +1732,54 @@ ThreatData.CATEGORY_CHAINS = {
         "item_hurricane_pike", "item_force_staff",
         "item_blink", "item_arcane_blink", "item_swift_blink",
         "item_black_king_bar", "item_cyclone", "item_wind_waker",
-        "item_pipe_of_insight", "item_aeon_disk",
+        "item_pipe", "item_glimmer_cape", "item_solar_crest",
     },
     -- Area-deny traps (Disruptor Kinetic Field, Underlord Pit of Malice,
     -- Faceless Void Chrono edge). Forced movement blocked -- only knockback
     -- and blink escape. Hero-specific knockback abilities patch in via
     -- per-hero CATEGORY_PATCHES.
+    -- Area-deny traps. Barrier/root traps (Kinetic Field, Pit) set
+    -- blocks_forced_movement, so blink is FILTERED and only knockback
+    -- (Force/Pike perp/far) crosses -- they MUST lead. Non-blocking traps
+    -- keep blink.
     trap = {
+        "item_force_staff", "item_hurricane_pike",
         "item_blink", "item_arcane_blink", "item_swift_blink",
+        "item_black_king_bar", "item_cyclone", "item_wind_waker",
     },
     -- Drain channels (Pugna Life Drain, Lion Mana Drain). Force/Pike
     -- breaks tether.
     drain = {
         "item_force_staff", "item_hurricane_pike",
-        "item_cyclone", "item_manta",
+        "item_blink", "item_swift_blink", "item_arcane_blink",
+        "item_cyclone", "item_wind_waker", "item_manta",
+        "item_satanic", "item_disperser", "item_diffusal_blade",
     },
     -- Physical-chase debuffs (Lifestealer Open Wounds, Slark Essence Shift).
     -- Pike pushes chaser, Glimmer/Ghost break attack target-lock.
     physical_chase = {
         "item_hurricane_pike", "item_force_staff",
-        "item_glimmer_cape", "item_ghost",
+        "item_ghost", "item_glimmer_cape", "item_solar_crest",
+        "item_silver_edge", "item_invis_sword",
+        "item_blade_mail", "item_crimson_guard",
         "item_manta", "item_black_king_bar",
     },
     -- Lockdown buffs on enemy (Bristleback turn, Troll trance, Ursa Enrage).
     -- The enemy is now extra-tanky -- defensive items rather than displacement.
     lockdown = {
         "item_cyclone", "item_wind_waker", "item_lotus_orb",
-        "item_manta", "item_aeon_disk", "item_black_king_bar",
+        "item_manta", "item_black_king_bar",
+        -- enemy becomes a tanky physical threat (Duel, Enrage, Battle Trance):
+        -- attack-immunity / block / return are the real answers.
+        "item_ghost", "item_crimson_guard", "item_blade_mail",
     },
     -- Single-target burst (Lina Laguna, Lion Finger, Zeus Bolt, single-target
     -- nukes). Lotus reflects, BKB blocks, magic_barrier eats.
     targeted_burst = {
         "item_lotus_orb",
-        "item_black_king_bar", "item_pipe_of_insight",
+        "item_black_king_bar", "item_pipe",
         "item_cyclone", "item_wind_waker", "item_glimmer_cape",
-        "item_manta", "item_aeon_disk",
+        "item_manta",
     },
 }
 
@@ -1397,23 +1858,30 @@ ThreatData.THREAT_ARRIVAL_TIMING = {
     --   lvl 3: (375 - 93.75) / 1.5  = 188 u/s^2
     --   lvl 4: (425 - 106.25) / 1.5 = 213 u/s^2  (catalog default)
     --
-    -- compute_arrival_time computes:
-    --   predicted_end_speed = min(peak_speed_cap, live + ramp_accel * W_LEAD)
-    --   avg_during_prep     = (live + predicted_end_speed) / 2
-    -- Handles BOTH early-charge (still ramping) and late-charge (already
-    -- at peak; peak_speed_cap clamps the over-extrapolation) cases.
-    --
-    -- peak_speed_cap = 800 covers Bara at lvl 4 (715 base+max) + Phase
-    -- Boots (+50) + level 15 charge talent (+60 bonus = max 485 instead
-    -- of 425, peak ~775). Caps higher edge cases without overshooting.
-    -- Per-level KV reads (lvl-aware accel + cap) queued for v0.5.50.1
-    -- once modifier_handle threading from armed_threats lands.
+    -- v0.5.114: ComputeArrivalTime now integrates the ramp EXACTLY
+    -- (RampImpactT closed form over the REMAINING wind-up) instead of the
+    -- v0.5.50 avg extrapolation. accel resolves per-LEVEL at runtime via
+    -- the kv_* keys below (movement_speed 275/325/375/425, min bonus =
+    -- min_movespeed_bonus_pct 25 percent of max, windup_time 1.5 --
+    -- Liquipedia re-verified 2026-06-12, talent changes flow through the
+    -- KV read); ramp_accel stays the lvl-4 FALLBACK for unreadable KV.
+    -- The remaining wind-up comes from opts.elapsed_s (the hero stamps
+    -- armed_t at charge-modifier create); unknown elapsed assumes the
+    -- full windup remains (overestimates speed = fires earlier = safe).
+    -- peak_speed_cap is retained as documentation but no longer consulted:
+    -- the ramp DURATION bounds the end speed, and talent builds exceed the
+    -- 800 guess (clamping re-introduced exactly the error this removes).
     modifier_spirit_breaker_charge_of_darkness = {
         kind                 = "homing_charge",
         speed_source         = "live_with_ramp",
         speed_fallback       = 700,   -- if NPC.GetMoveSpeed fails
-        ramp_accel           = 213,   -- u/s^2 (lvl 4 default)
-        peak_speed_cap       = 800,   -- absolute speed ceiling for the ramp
+        ramp_accel           = 213,   -- u/s^2 fallback (lvl 4) when KV unreadable
+        ramp_windup_s        = 1.5,   -- KV windup_time fallback
+        kv_ability           = "spirit_breaker_charge_of_darkness",
+        kv_max_speed_key     = "movement_speed",
+        kv_min_pct_key       = "min_movespeed_bonus_pct",
+        kv_windup_key        = "windup_time",
+        peak_speed_cap       = 800,   -- LEGACY (unused since v0.5.114)
         cast_point           = 0,
         post_cast_delay      = 0,
         impact_pos           = "self",
@@ -2110,7 +2578,102 @@ ThreatData.THREAT_ARRIVAL_TIMING = {
 ---@return userdata? impact_pos  where defensive AoE saves should be aimed
 ---@return table? entry        the catalog row
 ---@return number? speed       effective travel speed used in the computation
-function ThreatData.ComputeArrivalTime(threat_mod, caster, target, modifier_handle, kv_lookup)
+----------------------------------------------------------------------------
+-- v0.5.114 precise charge-ramp kinematics (Liquipedia + KV verified)
+----------------------------------------------------------------------------
+
+---Distance a ramping charge covers over `horizon` seconds. PURE closed-form
+---integration of the Charge-of-Darkness speed profile (Liquipedia: linear
+---wind-up from the min bonus to the max bonus over windup_time seconds FROM
+---CHARGE START, then constant; the MS cap is removed during the charge, so
+---a live NPC.GetMoveSpeed read is the true ramped value):
+---  speed(t) = live + accel * min(t, rem_ramp)
+---  dist(T)  = live*t1 + 0.5*accel*t1^2 + (live + accel*rem_ramp)*(T - t1)
+---             where t1 = min(T, rem_ramp)
+---@param live     number current (ramped) speed, u/s
+---@param accel    number ramp acceleration, u/s^2
+---@param rem_ramp number seconds of wind-up REMAINING (0 = at peak)
+---@param horizon  number seconds to integrate over
+---@return number distance in units
+function ThreatData.RampTravel(live, accel, rem_ramp, horizon)
+    live, accel = live or 0, accel or 0
+    rem_ramp = math.max(0, rem_ramp or 0)
+    horizon  = math.max(0, horizon or 0)
+    local t1 = math.min(horizon, rem_ramp)
+    local dist = live * t1 + 0.5 * accel * t1 * t1
+    if horizon > t1 then
+        dist = dist + (live + accel * t1) * (horizon - t1)
+    end
+    return dist
+end
+
+---Exact arrival time for a ramping charge to cover `dist` units: the
+---closed-form inverse of RampTravel (quadratic solve inside the ramp,
+---linear after it). Returns nil when the inputs cannot ever arrive
+---(zero speed and zero acceleration).
+---@param live     number current (ramped) speed, u/s
+---@param accel    number ramp acceleration, u/s^2
+---@param rem_ramp number seconds of wind-up remaining
+---@param dist     number units to cover
+---@return number|nil seconds
+function ThreatData.RampImpactT(live, accel, rem_ramp, dist)
+    live, accel = live or 0, accel or 0
+    rem_ramp = math.max(0, rem_ramp or 0)
+    dist = math.max(0, dist or 0)
+    if dist == 0 then return 0 end
+    if live <= 0 and accel <= 0 then return nil end
+    local d_ramp = live * rem_ramp + 0.5 * accel * rem_ramp * rem_ramp
+    if accel > 0 and rem_ramp > 0 and dist <= d_ramp then
+        -- inside the ramp: solve 0.5*a*t^2 + live*t - dist = 0 for t > 0
+        return (math.sqrt(live * live + 2 * accel * dist) - live) / accel
+    end
+    local v_end = live + accel * rem_ramp
+    if v_end <= 0 then return nil end
+    return rem_ramp + (dist - d_ramp) / v_end
+end
+
+---Resolve the live ramp kinematics for a `live_with_ramp` catalog entry:
+---(live, accel, rem_ramp). live = NPC.GetMoveSpeed (true ramped value; cap
+---removed during charge), falling back to entry.speed_fallback. accel =
+---per-LEVEL KV when resolvable: max_bonus = kv_lookup(ability,
+---entry.kv_max_speed_key), min = max * min_movespeed_bonus_pct/100, accel =
+---(max - min) / windup_time -- for Charge of Darkness this yields
+---137.5/162.5/187.5/212.5 u/s^2 at levels 1-4 (matching the Liquipedia
+---68.75->275 ... 106.25->425 wind-up over 1.5s; talents that raise the max
+---bonus flow through the KV read). Falls back to entry.ramp_accel.
+---rem_ramp = windup - elapsed_s clamped at 0; UNKNOWN elapsed assumes the
+---full windup remains (worst case still-ramping: overestimates speed, so
+---consumers fire earlier = the safe direction).
+---@param entry      table  the THREAT_ARRIVAL_TIMING entry
+---@param caster     any    charge caster handle
+---@param kv_lookup  fun(abil, key, fallback):number|nil
+---@param elapsed_s  number|nil seconds since the charge began
+---@return number live, number accel, number rem_ramp
+function ThreatData.ChargeRampKinematics(entry, caster, kv_lookup, elapsed_s)
+    local live = (NPC.GetMoveSpeed and caster and NPC.GetMoveSpeed(caster)) or 0
+    if not live or live <= 0 then live = entry.speed_fallback or 0 end
+    local accel  = entry.ramp_accel or 0
+    local windup = entry.ramp_windup_s or 1.5
+    if kv_lookup and entry.kv_ability and NPC.GetAbility and caster then
+        local okab, ab = pcall(NPC.GetAbility, caster, entry.kv_ability)
+        if okab and ab then
+            local maxb = kv_lookup(ab, entry.kv_max_speed_key or "movement_speed", 0)
+            if maxb and maxb > 0 then
+                local minpct = kv_lookup(ab, entry.kv_min_pct_key or "min_movespeed_bonus_pct", 25)
+                local wkv    = kv_lookup(ab, entry.kv_windup_key or "windup_time", windup)
+                if wkv and wkv > 0 then windup = wkv end
+                accel = (maxb * (1 - (minpct or 25) / 100)) / windup
+            end
+        end
+    end
+    local rem = windup
+    if elapsed_s and elapsed_s >= 0 then
+        rem = math.max(0, windup - elapsed_s)
+    end
+    return live, accel, rem
+end
+
+function ThreatData.ComputeArrivalTime(threat_mod, caster, target, modifier_handle, kv_lookup, opts)
     if not (threat_mod and caster and target) then return nil end
     if not (ThreatData.THREAT_ARRIVAL_TIMING and ThreatData.THREAT_ARRIVAL_TIMING[threat_mod]) then
         return nil
@@ -2128,24 +2691,23 @@ function ThreatData.ComputeArrivalTime(threat_mod, caster, target, modifier_hand
 
     -- Derive effective travel speed.
     local speed = entry.speed_fallback or 0
+    local ramp_live, ramp_accel_v, ramp_rem  -- v0.5.114 precise-ramp stash
     if entry.speed_source == "live_or_fallback" then
         local live = NPC.GetMoveSpeed and NPC.GetMoveSpeed(caster)
         if live and live > 0 then speed = live end
     elseif entry.speed_source == "live_with_ramp" then
-        -- v0.5.50: ramp model for accelerating threats (Bara Charge per
-        -- Liquipedia: 1.5s linear wind-up from min to max MS bonus).
-        --   predicted_end = min(peak_speed_cap, live + ramp_accel * W_LEAD)
-        --   avg           = (live + predicted_end) / 2
-        -- Handles both early-charge (still ramping) and late-charge (already
-        -- at peak; peak_speed_cap clamps the over-extrapolation).
-        local W_LEAD = 1.12
-        local live   = NPC.GetMoveSpeed and NPC.GetMoveSpeed(caster) or 0
-        if live and live > 0 then
-            local accel = entry.ramp_accel or 0
-            local cap   = math.max(live, entry.peak_speed_cap or 0)
-            local predicted_end = math.min(cap, live + accel * W_LEAD)
-            speed = (live + predicted_end) / 2
-        end
+        -- v0.5.114 precise ramp (replaces the v0.5.50 avg extrapolation,
+        -- which carried its own stale W_LEAD=1.12 horizon, a flat lvl-4
+        -- accel and a guessed peak cap): resolve the LIVE kinematics
+        -- (current speed + per-level KV accel + REMAINING wind-up from
+        -- opts.elapsed_s) and let the travel section below invert the
+        -- exact integral (RampImpactT). The ramp DURATION bounds the end
+        -- speed naturally, so the peak_speed_cap guess is no longer
+        -- consulted (talent builds exceed it and clamping re-introduced
+        -- the error this rewrite removes).
+        ramp_live, ramp_accel_v, ramp_rem = ThreatData.ChargeRampKinematics(
+            entry, caster, kv_lookup, opts and opts.elapsed_s)
+        if ramp_live and ramp_live > 0 then speed = ramp_live end
     elseif entry.speed_source == "kv_or_fallback" then
         local abil
         if modifier_handle and Modifier and Modifier.GetAbility then
@@ -2160,8 +2722,26 @@ function ThreatData.ComputeArrivalTime(threat_mod, caster, target, modifier_hand
     end
 
     -- Travel time = dist(caster, target) / speed (0 for instant kinds).
+    -- v0.5.114: ramp kinds invert the exact integral instead (RampImpactT);
+    -- the returned eff_speed becomes d / impact_t, the consistent average
+    -- over the TRUE arrival horizon.
     local travel_t = 0
-    if speed > 0 then
+    if ramp_live then
+        local cpos = Entity.GetAbsOrigin(caster)
+        local tpos = Entity.GetAbsOrigin(target)
+        if cpos and tpos then
+            local dx = (cpos.x or 0) - (tpos.x or 0)
+            local dy = (cpos.y or 0) - (tpos.y or 0)
+            local d  = math.sqrt(dx * dx + dy * dy)
+            local t  = ThreatData.RampImpactT(ramp_live, ramp_accel_v, ramp_rem, d)
+            if t and t > 0 then
+                travel_t = t
+                speed    = d / t
+            elseif speed > 0 then
+                travel_t = d / speed
+            end
+        end
+    elseif speed > 0 then
         local cpos = Entity.GetAbsOrigin(caster)
         local tpos = Entity.GetAbsOrigin(target)
         if cpos and tpos then
@@ -2324,7 +2904,7 @@ ThreatData.THREAT_TIMING = {
     modifier_earth_spirit_rolling_boulder = "at_impact",
     modifier_life_stealer_open_wounds    = "reactive",
     modifier_pugna_life_drain            = "reactive",
-    modifier_disruptor_kinetic_field_remnant = "reactive",  -- v6.15.10 - fires once trapped
+    modifier_disruptor_kinetic_field = "reactive",  -- v6.15.10 - fires once trapped
     modifier_abyssal_underlord_pit_of_malice_ensare = "reactive",  -- v6.15.256 - fires once snared
 }
 
@@ -2485,7 +3065,7 @@ ThreatData.THREAT_CATEGORY = {
     modifier_earth_spirit_rolling_boulder      = "line_projectile",
     modifier_life_stealer_open_wounds          = "physical_chase",
     modifier_pugna_life_drain                  = "drain",
-    modifier_disruptor_kinetic_field_remnant   = "trap",         -- v6.15.10
+    modifier_disruptor_kinetic_field   = "trap",         -- v6.15.10
     modifier_abyssal_underlord_pit_of_malice_ensare   = "trap",         -- v6.15.256
     -- v6.15.258 zero-coverage fill batch 1
     modifier_dragon_knight_dragon_tail         = "targeted_disable",  -- v6.15.258
@@ -2705,7 +3285,7 @@ ThreatData.THREAT_SEVERITY = {
     modifier_earth_spirit_rolling_boulder= "medium", -- line stun, hard to dodge close-range
     modifier_life_stealer_open_wounds    = "medium", -- chase enabler; depends on Naix HP
     modifier_pugna_life_drain            = "medium", -- HP drain channel
-    modifier_disruptor_kinetic_field_remnant = "high", -- v6.15.10 trap usually paired with Static Storm
+    modifier_disruptor_kinetic_field = "high", -- v6.15.10 trap usually paired with Static Storm
     modifier_abyssal_underlord_pit_of_malice_ensare = "medium", -- v6.15.256 1.5-1.8s root, recurring; less lethal than KF
     -- v6.15.258 zero-coverage fill batch 1
     modifier_dragon_knight_dragon_tail   = "medium",  -- v6.15.258 1.7-2.75s stun, recoverable
@@ -2830,7 +3410,7 @@ ThreatData.SAVE_COOLDOWN_TIER = {
     item_aeon_disk      = "high",    -- 105/125/145/165s scaling
     -- New items
     item_wind_waker     = "low",     -- 19s CD (was 60s in earlier patch)
-    item_pipe_of_insight = "medium", -- 60s CD, team buff
+    item_pipe = "medium", -- 60s CD, team buff
     item_crimson_guard  = "medium",  -- 40s CD
     item_blade_mail     = "medium",  -- 25s CD, 5.5s duration, 85% reflect
     item_ghost          = "low",     -- 22s CD
@@ -2855,6 +3435,129 @@ ThreatData.SAVE_COOLDOWN_TIER = {
 ---@param save_name  string   key into SAVE_KIND
 ---@param threat_mod string|nil  modifier name (key into THREAT_COUNTER)
 ---@return boolean
+---Derive the set of counter-kinds from a threat profile (pure; no game APIs).
+---Implements Lina/THREAT_COUNTER_AXIS_RULE_REVIEW.md "corrected DeriveCounters rule set".
+---Facts: school(magical|physical|pure), damage_type, pierces_spell_immunity
+---(true|false|"partial"), dispellable(none|basic|strong), delivery(spell|channel|
+---projectile_line|projectile_homing|homing_charge|leap|line_charge|attack), targeted,
+---positional, primary_harm(damage|disable|displacement), timing(pre_cast|at_impact|
+---mid_channel|reactive|post_apply), forced_leash, debuff_sticks_to_self,
+---blocks_forced_movement, lotus_reflectable(default true). Optional per-entry:
+---zone_outlasts_cyclone, already_locked_channel, enemy_self_buff, attack_enabler,
+---severity, drop_kinds, add_kinds.
+---@param p table profile
+---@return string[] kinds (insertion-ordered, deduped)
+function ThreatData.DeriveCounters(p)
+    local set, order = {}, {}
+    local function add(k) if not set[k] then set[k] = true; order[#order + 1] = k end end
+    local function drop(k)
+        if set[k] then
+            set[k] = nil
+            for i = #order, 1, -1 do if order[i] == k then table.remove(order, i) end end
+        end
+    end
+
+    local pierces_full = (p.pierces_spell_immunity == true)  -- 'partial'/false do NOT suppress
+    local spell_set = { spell = true, channel = true, projectile_line = true,
+        projectile_homing = true, homing_charge = true, leap = true, line_charge = true }
+
+    -- UNIVERSAL: invuln only, gated off latched / already-applied threats
+    local latched = (p.delivery == "projectile_homing" or p.delivery == "homing_charge")
+    local zone_outlasts = (p.positional and p.zone_outlasts_cyclone)
+    if p.timing == "pre_cast" or (p.timing == "at_impact" and not latched) then
+        if not zone_outlasts and not p.forced_leash then add("invuln") end
+    end
+
+    -- MAGICAL-SCHOOL MITIGATION (decoupled from damage_type)
+    if p.school == "magical" and spell_set[p.delivery] then
+        if not pierces_full and p.timing ~= "mid_channel" then add("magic_immune") end
+    end
+    if p.damage_type == "magical" and p.primary_harm == "damage" then
+        add("magic_barrier")
+        if p.severity == "survivable" then add("magic_resist") end
+    end
+    -- PURE: no damage-mitigation kind (dodge/dispel/reflect from sibling branches)
+
+    -- PHYSICAL (attack-delivered)
+    if p.school == "physical" and p.delivery == "attack" then
+        add("physical_immune"); add("damage_block")
+        if not p.forced_leash and not p.already_locked_channel then add("invis") end
+        -- damage_return: per-entry add_kinds only (net loss vs self-attack ults)
+        if not p.forced_leash and not p.debuff_sticks_to_self then
+            add("displacement_far"); add("displacement_perp")
+        end
+    end
+
+    -- REMOVAL (dispel) -- only when the debuff is present at the save window.
+    -- The spec's primary_harm filter {disable,dot,slow,silence,root} collapses
+    -- to "not displacement" under our coarse 3-value primary_harm enum: dispel
+    -- helps for disable AND damage (DoTs are removable), but cannot counter a
+    -- knockback/pull (primary_harm=="displacement"). Pure instant burst is
+    -- already excluded since it leaves no dispellable residual (dispellable=
+    -- "none"); per-threat drop_kinds covers any remaining edge case.
+    local debuff_present = (p.timing == "mid_channel" or p.timing == "reactive"
+                            or p.timing == "post_apply")
+    local dispel_ok = (p.dispellable ~= "none" and p.dispellable ~= nil
+        and debuff_present and p.primary_harm ~= "displacement"
+        and not p.enemy_self_buff and not p.attack_enabler)
+    if dispel_ok then
+        if p.dispellable == "basic" then add("dispel_basic"); add("dispel_strong")
+        elseif p.dispellable == "strong" then add("dispel_strong") end
+    end
+
+    -- REFLECT (Lotus) -- cast-time single-target spell harm only
+    if p.targeted and (p.lotus_reflectable ~= false) and p.delivery == "spell"
+       and (p.school == "magical" or p.school == "pure")
+       and (p.primary_harm == "damage" or p.primary_harm == "disable")
+       and p.timing == "pre_cast" then
+        add("reflect_target")
+    end
+
+    -- DELIVERY-SPECIFIC DODGE / DISPLACEMENT
+    if p.delivery == "projectile_line" or p.delivery == "line_charge" then
+        add("displacement_perp"); add("displacement_far"); add("displacement_blink")
+    elseif p.delivery == "projectile_homing" then
+        add("displacement_blink")
+    elseif p.delivery == "homing_charge" then
+        add("displacement_at_source"); add("displacement_perp")
+    elseif p.delivery == "leap" then
+        add("displacement_perp"); add("displacement_blink")
+    end
+
+    if p.delivery == "channel" then
+        add("channel_break"); add("displacement_at_source")
+        if not p.positional then
+            add("displacement_far"); add("displacement_perp"); add("displacement_blink")
+        end
+    end
+
+    -- positional / placed AoE zones (incl. AoE channels). Use `not p.targeted`
+    -- (nil-safe) NOT `== false`: profiles omit default-false booleans, so a
+    -- non-targeted threat has p.targeted == nil, and `nil == false` is false.
+    if (p.delivery == "spell" or p.delivery == "channel")
+       and not p.targeted and p.positional then
+        add("displacement_perp"); add("displacement_far")
+        if not p.blocks_forced_movement then add("displacement_blink")
+        else add("displacement_perp") end
+    end
+
+    -- per-entry overrides applied LAST
+    if p.drop_kinds then for _, k in ipairs(p.drop_kinds) do drop(k) end end
+    if p.add_kinds  then for _, k in ipairs(p.add_kinds)  do add(k)  end end
+    return order
+end
+
+
+-- Assemble THREAT_COUNTER from THREAT_PROFILE via the pure DeriveCounters. Runs at
+-- module load AFTER DeriveCounters is defined and BEFORE `return ThreatData`, so any
+-- consumer that captures `TD.THREAT_COUNTER` at require-time (e.g. Sniper.lua) gets the
+-- fully populated table. Threats with a profile are constrained; those without remain
+-- unlisted (unconstrained) exactly as before.
+ThreatData.THREAT_COUNTER = {}
+for _mod, _profile in pairs(ThreatData.THREAT_PROFILE) do
+    ThreatData.THREAT_COUNTER[_mod] = ThreatData.DeriveCounters(_profile)
+end
+
 function ThreatData.SaveCounters(save_name, threat_mod)
     if not threat_mod then return true end
     local kinds = ThreatData.SAVE_KIND[save_name]
@@ -3003,8 +3706,9 @@ ThreatData.ENEMY_BUFF_THREATS = {
 -- v6.13 Cross F#7 - derived ESCAPE_ITEM_NAMES
 --
 -- Single source of truth: a target's "escape items" are exactly the items
--- in SAVE_KIND that carry one of {invuln, dispel_basic, reflect_target,
--- magic_immune}. Previously lib/target.lua hardcoded a parallel list that
+-- in SAVE_KIND that carry one of {invuln, dispel_basic, dispel_strong,
+-- reflect_target, magic_immune}. Previously lib/target.lua hardcoded a
+-- parallel list that
 -- drifted when SAVE_KIND changed (v6.7 BKB gained dispel_basic; Diffusal/
 -- Disperser carry dispel_basic but weren't in target.lua's list).
 --
@@ -3013,7 +3717,7 @@ ThreatData.ENEMY_BUFF_THREATS = {
 ----------------------------------------------------------------------------
 do
     local ESCAPE_KINDS = {
-        invuln = true, dispel_basic = true,
+        invuln = true, dispel_basic = true, dispel_strong = true,
         reflect_target = true, magic_immune = true,
     }
     local names = {}

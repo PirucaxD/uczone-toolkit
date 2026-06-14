@@ -174,10 +174,14 @@ function ItemSaves.force_staff(cfg)
         return cfg.issue_self(intent, it)
     end }
 end
-function ItemSaves.blink(cfg)
-    return { short = "blink", fire = function(intent, threat_caster)
+-- v0.5.109: generalized over opts.item/opts.short so item_blink and the
+-- POINT blink variants (Swift / Arcane / Overwhelming) share one body.
+function ItemSaves.blink(cfg, opts)
+    local item  = (opts and opts.item)  or "item_blink"
+    local short = (opts and opts.short) or "blink"
+    return { short = short, fire = function(intent, threat_caster)
         local me = cfg.self_npc()
-        local it = me and cfg.item("item_blink"); if not it then return false end
+        local it = me and cfg.item(item); if not it then return false end
         -- blink-broken gate: any recent damage disables the dagger ~3s.
         local dmg = cfg.recent_damage and cfg.recent_damage(3.0) or 0
         if dmg and dmg > 0 then
@@ -219,6 +223,73 @@ function ItemSaves.hurricane_pike(cfg)
     end }
 end
 
+-- v0.5.109 expansion: NO_TARGET bare-cast defensive actives (one-liner, no
+-- guard, silent -- matches the manta / shadow-blade pattern). Cast types
+-- KV-verified (items.json AbilityBehavior NO_TARGET). Already referenced by
+-- the threat_data chains; the builders are the missing actuators.
+function ItemSaves.ghost(cfg)
+    return { short = "ghost", fire = function(intent)
+        return cfg.issue_no_target(intent, cfg.item("item_ghost"))
+    end }
+end
+function ItemSaves.satanic(cfg)
+    return { short = "satanic", fire = function(intent)
+        return cfg.issue_no_target(intent, cfg.item("item_satanic"))
+    end }
+end
+function ItemSaves.pipe(cfg)
+    return { short = "pipe", fire = function(intent)
+        return cfg.issue_no_target(intent, cfg.item("item_pipe"))
+    end }
+end
+function ItemSaves.crimson_guard(cfg)
+    return { short = "crimson", fire = function(intent)
+        return cfg.issue_no_target(intent, cfg.item("item_crimson_guard"))
+    end }
+end
+function ItemSaves.blade_mail(cfg)
+    return { short = "blademail", fire = function(intent)
+        return cfg.issue_no_target(intent, cfg.item("item_blade_mail"))
+    end }
+end
+function ItemSaves.phase_boots(cfg)
+    return { short = "phase", fire = function(intent)
+        return cfg.issue_no_target(intent, cfg.item("item_phase_boots"))
+    end }
+end
+
+-- v0.5.109 expansion: UNIT_TARGET-self defensive actives. KV-verified self is
+-- a valid target (Solar Crest FRIENDLY, Disperser BOTH). issue_self = cast-
+-- target on self, like ethereal_blade_self.
+function ItemSaves.solar_crest(cfg)
+    return { short = "solar", fire = function(intent)
+        local it = cfg.item("item_solar_crest"); if not it then return false end
+        return cfg.issue_self(intent, it)
+    end }
+end
+function ItemSaves.disperser(cfg)
+    return { short = "disperser", fire = function(intent)
+        local it = cfg.item("item_disperser"); if not it then return false end
+        return cfg.issue_self(intent, it)
+    end }
+end
+
+-- v0.5.109 expansion: Diffusal Blade enemy-purge. KV-verified UNIT_TARGET
+-- ENEMY, cast range 600. Defensively purges the attacker (strips positive
+-- buffs). Mirrors the hurricane_pike enemy-primary guard; no valid caster ->
+-- no-op. 600 is a builder constant (Diffusal's range is fixed).
+function ItemSaves.diffusal_blade(cfg)
+    return { short = "diffusal", fire = function(intent, threat_caster)
+        local it = cfg.item("item_diffusal_blade"); if not it then return false end
+        if threat_caster and Entity.IsEntity(threat_caster) and Target.IsAlive(threat_caster)
+           and not (NPC.HasState and NPC.HasState(threat_caster, Enum.ModifierState.MODIFIER_STATE_MAGIC_IMMUNE))
+           and cfg.dist_to(threat_caster) <= 600 then
+            return cfg.issue_target(intent, it, threat_caster)
+        end
+        return false
+    end }
+end
+
 -- Factory: assemble the full item map. Builders append to this list as later
 -- groups are added; keep it the single source of the roster.
 local BUILDERS = {
@@ -234,6 +305,18 @@ local BUILDERS = {
     item_force_staff         = ItemSaves.force_staff,
     item_blink               = ItemSaves.blink,
     item_hurricane_pike      = ItemSaves.hurricane_pike,
+    item_ghost               = ItemSaves.ghost,
+    item_satanic             = ItemSaves.satanic,
+    item_pipe                = ItemSaves.pipe,
+    item_crimson_guard       = ItemSaves.crimson_guard,
+    item_blade_mail          = ItemSaves.blade_mail,
+    item_phase_boots         = ItemSaves.phase_boots,
+    item_solar_crest         = ItemSaves.solar_crest,
+    item_disperser           = ItemSaves.disperser,
+    item_swift_blink         = function(cfg) return ItemSaves.blink(cfg, { item = "item_swift_blink",        short = "swiftblink" }) end,
+    item_arcane_blink        = function(cfg) return ItemSaves.blink(cfg, { item = "item_arcane_blink",       short = "arcaneblink" }) end,
+    item_overwhelming_blink  = function(cfg) return ItemSaves.blink(cfg, { item = "item_overwhelming_blink", short = "overwhelmingblink" }) end,
+    item_diffusal_blade      = ItemSaves.diffusal_blade,
 }
 function ItemSaves.build(cfg)
     local map = {}

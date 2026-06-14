@@ -239,14 +239,21 @@ end
 ---@param push_distance number how far the save moves the defender
 ---@return userdata|nil escape_dir
 ---@return userdata|nil landing
-function Escape.ComputeSafeDest(me, threat_caster, push_distance)
+function Escape.ComputeSafeDest(me, threat_caster, push_distance, threat_pos)
     if not me or not push_distance then return nil, nil end
     local me_pos = Entity.GetAbsOrigin(me)
     if not me_pos then return nil, nil end
     local toward
-    local cp = threat_caster and Entity.IsEntity(threat_caster)
-               and Target.IsAlive(threat_caster)
-               and Entity.GetAbsOrigin(threat_caster) or nil
+    -- v0.5.130: threat_pos (optional Vector) is a PREDICTED threat position the
+    -- hero supplies (state.predict_target_pos / smoothed velocity) so the escape
+    -- pushes away from where a moving/charging threat is HEADING, not where it
+    -- currently is -- else "away from a unit charging at me" points along its
+    -- charge = TOWARD where it lands (the v0.5.129 WW lesson, generalised). A
+    -- stationary threat predicts ~its current pos so this is a no-op for it.
+    -- nil threat_pos -> live origin (Sniper + the WW recompute path: unchanged).
+    local alive_caster = threat_caster and Entity.IsEntity(threat_caster)
+                         and Target.IsAlive(threat_caster) or nil
+    local cp = alive_caster and (threat_pos or Entity.GetAbsOrigin(threat_caster)) or nil
     if cp then
         local diff = cp - me_pos
         if diff:Length2DSqr() < 1 then return nil, nil end
@@ -311,14 +318,17 @@ end
 ---@param push_dist number distance the cast will push (typically 600)
 ---@param threat_caster userdata|nil specific threat, if known
 ---@param cfg EscapeCfg hero-side callbacks
+---@param threat_pos userdata|nil v0.5.130: optional PREDICTED threat position
+---       (hero-supplied) so the push aims away from where a charging threat is
+---       HEADING, not where it is. nil -> the caster's live origin (unchanged).
 ---@return table|nil pending struct to stash (nil = immediate fire or skip)
 ---@return boolean ok did the harness issue an action (cast OR turn)
 function Escape.TrySelfPush(me, intent, item, item_name, push_dist,
-                            threat_caster, cfg)
+                            threat_caster, cfg, threat_pos)
     if not (me and item and cfg) then return nil, false end
     local me_pos = Entity.GetAbsOrigin(me)
     if not me_pos then return nil, false end
-    local escape_dir, _ = Escape.ComputeSafeDest(me, threat_caster, push_dist)
+    local escape_dir, _ = Escape.ComputeSafeDest(me, threat_caster, push_dist, threat_pos)
     if not escape_dir then return nil, false end
     local away_pt = Vector(me_pos.x + escape_dir.x * 400,
                            me_pos.y + escape_dir.y * 400, me_pos.z)
@@ -466,6 +476,11 @@ function Escape.QueueSafePostMove(me, intent, push_dist, threat_caster,
         observed_airborne     = false,
         last_reissue_t        = 0,
         reissue_seq           = 0,
+        -- v0.5.129: retained so PostAirborneMoveTick can RECOMPUTE the dest from
+        -- the threat's live position each re-issue (the cast-time `landing` is a
+        -- snapshot -- wrong for a through-dash like Primal Onslaught; see the tick).
+        threat_caster         = threat_caster,
+        push_dist             = push_dist,
     }
     if cfg.tlog then
         cfg.tlog(1, intent .. "_post_move", {
@@ -514,6 +529,21 @@ function Escape.PostAirborneMoveTick(me, pending, cfg)
         if not pending.moves_during_airborne then return pending end
     elseif not pending.observed_airborne then
         return pending
+    elseif pending.moves_during_airborne then
+        -- v0.5.131: WW (moves_during_airborne) airborne has ENDED -> STOP. The
+        -- reposition happens DURING the cyclone; once it lapses, continuing to
+        -- re-issue MOVE on the ground drags Lina under brain control toward a
+        -- (recompute-drifting) dest for up to the 7s deadline, overriding the
+        -- player long after WW is gone (user-reported; the v0.5.129 recompute
+        -- made the dest rarely "arrive" so it ran to the deadline). Hand control
+        -- back now -- the normal escape/combo logic resumes next tick. Eul
+        -- (moves_during_airborne=false) still falls through to its single
+        -- post-airborne reposition move (it cannot move while airborne).
+        if tlog then
+            tlog(1, pending.intent .. "_post_move_landed",
+                 { reissues = pending.reissue_seq or 0 })
+        end
+        return nil
     end
     local me_pos = Entity.GetAbsOrigin(me)
     if me_pos then
@@ -535,6 +565,20 @@ function Escape.PostAirborneMoveTick(me, pending, cfg)
     end
     pending.last_reissue_t = cfg.now()
     pending.reissue_seq    = (pending.reissue_seq or 0) + 1
+    -- v0.5.129: recompute the safe dest from the threat's LIVE position each
+    -- re-issue. The cast-time dest is a snapshot; for a THROUGH-dash (Primal
+    -- Onslaught) the caster is mid-approach at WW-cast, so "away from his current
+    -- position" points along the dash = toward where he LANDS, sending Lina
+    -- TOWARD him (user-reported). Recomputing self-corrects: once the dasher
+    -- passes Lina and lands, the away-direction flips and Lina retreats from his
+    -- final position. Lina is airborne (untargetable) the whole window, so the
+    -- brief pre-flip drift is harmless. nil (threat dead / degenerate / on top of
+    -- Lina) keeps the prior dest. Only Lina drives this tick (Sniper uses
+    -- TrySelfPush), so this does not touch Sniper.
+    if pending.threat_caster and pending.push_dist then
+        local _, new_dest = Escape.ComputeSafeDest(me, pending.threat_caster, pending.push_dist)
+        if new_dest then pending.dest = new_dest end
+    end
     cfg.safe_issue {
         hero = cfg.hero_key, layer = cfg.layer or "def",
         intent = pending.intent .. "_post_move_fire_" .. pending.reissue_seq,
@@ -1031,6 +1075,43 @@ function Escape.SafestSpotNear(me, radius, opts)
         end
     end
     return best_pos, best_score
+end
+
+---Offensive Blink-in landing. Pick a point to blink to so `aim_pos` ends up
+---within `engage_range` of `me`, diving as little as possible (near edge), and
+---never beyond `blink_range` from `me`. Pure geometry + a fog/proximity risk
+---score (Escape.AdvanceRiskScore). Hero-agnostic; Lina + any blink carrier.
+---@param me userdata
+---@param aim_pos table Vector {x,y,z} (target or cluster center)
+---@param blink_range number max blink travel (e.g. 1200)
+---@param engage_range number desired distance to aim_pos at landing (e.g. W range)
+---@param opts table|nil { margin=50, max_ms, now, snapshot }
+---@return table|nil landing, number risk_score, boolean reachable
+function Escape.BlinkInLanding(me, aim_pos, blink_range, engage_range, opts)
+    if not (me and aim_pos and blink_range and engage_range) then
+        return nil, math.huge, false
+    end
+    local me_pos = Entity.GetAbsOrigin(me)
+    if not me_pos then return nil, math.huge, false end
+    opts = opts or {}
+    local margin = opts.margin or 50
+    local dx, dy = me_pos.x - aim_pos.x, me_pos.y - aim_pos.y
+    local d_aim = math.sqrt(dx * dx + dy * dy)
+    if d_aim < 1e-3 then
+        return me_pos, Escape.AdvanceRiskScore(me, me_pos, opts), true
+    end
+    local ux, uy = dx / d_aim, dy / d_aim
+    local edge = math.max(0, engage_range - margin)
+    local landing = Vector(aim_pos.x + ux * edge, aim_pos.y + uy * edge, me_pos.z)
+    local ldx, ldy = landing.x - me_pos.x, landing.y - me_pos.y
+    local reachable = true
+    if math.sqrt(ldx * ldx + ldy * ldy) > blink_range then
+        local fx, fy = -ux, -uy
+        landing = Vector(me_pos.x + fx * blink_range, me_pos.y + fy * blink_range, me_pos.z)
+        local adx, ady = aim_pos.x - landing.x, aim_pos.y - landing.y
+        reachable = (math.sqrt(adx * adx + ady * ady) <= engage_range)
+    end
+    return landing, Escape.AdvanceRiskScore(me, landing, opts), reachable
 end
 
 return Escape

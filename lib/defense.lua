@@ -103,6 +103,87 @@ local DEFAULT_LOCK_BUFFER_S      = 0.3
 local DEFAULT_FALLBACK_LOCK_TTL  = 2.0
 local LOCK_TTL_HARD_CAP_S        = 6.0
 local LOCK_TTL_FLOOR_S           = 0.4
+-- v0.5.127 CD-aware early release (opt-in via cfg.item_on_cd). A held lock is
+-- released BEFORE its resolved TTL on a re-engage dispatch, but never sooner
+-- than the coalesce floor (so a single threat-instance's anim + modcreate +
+-- armed dispatch paths still collapse to ONE save -- the v0.5.40 single-spend
+-- invariant). Past the floor a new dispatch is a genuine re-engage: release
+-- once the fired save is confirmed spent (on CD) so the chain advances to the
+-- next ready save, OR after the give-up window if it never entered CD (the
+-- issue did not take) so the chain can re-attempt. The resolved TTL stays the
+-- unconditional upper backstop -- this only ever releases SOONER, never later.
+local DEFAULT_LOCK_CD_COALESCE_S = 0.30
+local DEFAULT_LOCK_CD_GIVEUP_S   = 0.60
+
+----------------------------------------------------------------------------
+-- v0.5.110 CHAIN COMPOSITION (Lina/CHAIN_COMPOSITION_DESIGN.md)
+----------------------------------------------------------------------------
+
+---Compose a final save chain from a lib item backbone + hero ability
+---injections + hero item exclusions. PURE: no engine calls, no dispatcher
+---state, safe at hero load time. Used TWO ways: automatically by
+---ResolveSaveOrder tier 3 for category-resolved threats, and directly by
+---heroes to build bespoke chains at load (e.g. Lina's committed-attacker
+---variants). NEVER mutates item_chain (it is typically the shared
+---TD.CATEGORY_CHAINS entry); always returns a new table.
+---
+---Algorithm (design sec 3.1):
+---  1. filtered = item_chain minus any name in exclusions.
+---  2. each injection, in declared order, splices injection.save at anchor:
+---     "head" -> position 1; "tail" -> append; {before="X"} -> immediately
+---     before the first X; {after="X"} -> immediately after the first X;
+---     before/after target absent (or anchor nil/unrecognized) -> tail. The
+---     save is ALWAYS placed, never dropped.
+---  3. dedupe, first occurrence wins. An injected save already in the
+---     backbone therefore MOVES to its anchor when anchored earlier (the
+---     committed-ranged cyclone-to-head case relies on this).
+---@param item_chain string[]|nil  category item backbone
+---@param injections table[]|nil   list of { save = string, anchor = "head"|"tail"|{before=string}|{after=string} }
+---@param exclusions table<string, boolean>|nil  item names removed from the backbone
+---@return string[] composed       a NEW list table
+function Defense.ComposeChain(item_chain, injections, exclusions)
+    local out = {}
+    if item_chain then
+        for i = 1, #item_chain do
+            local name = item_chain[i]
+            if not (exclusions and exclusions[name]) then
+                out[#out + 1] = name
+            end
+        end
+    end
+    if injections then
+        for i = 1, #injections do
+            local inj = injections[i]
+            if inj and inj.save then
+                local anchor, pos = inj.anchor, nil
+                if anchor == "head" then
+                    pos = 1
+                elseif type(anchor) == "table" then
+                    local ref = anchor.before or anchor.after
+                    for j = 1, #out do
+                        if out[j] == ref then
+                            pos = anchor.before and j or (j + 1)
+                            break
+                        end
+                    end
+                end
+                if pos then
+                    table.insert(out, pos, inj.save)
+                else
+                    out[#out + 1] = inj.save  -- "tail" / absent anchor target
+                end
+            end
+        end
+    end
+    local seen, deduped = {}, {}
+    for i = 1, #out do
+        if not seen[out[i]] then
+            seen[out[i]] = true
+            deduped[#deduped + 1] = out[i]
+        end
+    end
+    return deduped
+end
 
 ---Create a dispatcher bound to one hero's defense config.
 ---@param cfg table see Lina/LIB_DEFENSE_EXTRACTION.md for the cfg field list
@@ -151,6 +232,40 @@ local LOCK_TTL_FLOOR_S           = 0.4
 ---        Returns the hero's own NPC handle (used as the catalog target).
 ---        Already used by TrySaveSelf; now also consumed by the per-save
 ---        catalog gate in run_chain_walk.
+---  v0.5.110 chain-composition additions (all optional, opt-in; spec
+---  Lina/CHAIN_COMPOSITION_DESIGN.md):
+---    cfg.ability_injections table[]|nil
+---        List of { save = string, categories = string[]|"*", anchor =
+---        "head"|"tail"|{before=string}|{after=string} }. When this OR
+---        cfg.exclusions is registered, ResolveSaveOrder gains tier 3:
+---        any threat resolving to a category (TD.CategoryOf(threat_mod)
+---        or category_hint) gets Defense.ComposeChain(raw
+---        TD.CATEGORY_CHAINS backbone, matching injections,
+---        exclusions[category]) as an AUTHORITATIVE chain, ahead of
+---        patched_recommended / category_chains. MUST stay static after
+---        Defense.New: composed chains memoize per category.
+---    cfg.exclusions         table<string, table<string, boolean>>|nil
+---        Map category -> { item_name = true }: items removed from that
+---        category's composed backbone. Same static-after-load rule.
+---  v0.5.127 CD-aware lock release additions (all optional, opt-in; general
+---  re-engage structure, NOT tied to the full fixed TTL):
+---    cfg.item_on_cd         fun(save_short:string):boolean|nil
+---        Returns true if the named save's item/ability is currently on
+---        cooldown (= it actually fired / was spent). When registered, a HELD
+---        lock is released early on a re-engage dispatch once its fired save is
+---        confirmed spent, so the chain advances to the NEXT ready save (e.g.
+---        Pike spent -> WW) instead of staying locked for the whole TTL.
+---        nil = no early release (Sniper); the lock holds for its resolved TTL
+---        exactly as v0.5.40. The lib pcall-wraps it; a throw keeps the lock.
+---    cfg.lock_cd_coalesce_s number  (default 0.30)
+---        Minimum hold before ANY CD-aware release. Coalesces a single threat
+---        instance's multiple dispatch paths (anim + modcreate + armed, all
+---        within a few frames) into ONE save so the single-spend invariant
+---        survives. A new dispatch past this floor is treated as a re-engage.
+---    cfg.lock_cd_giveup_s   number  (default 0.60)
+---        If the fired save never enters cooldown by this point (the issue did
+---        not take, or a no-cooldown save), release anyway so the chain can
+---        re-attempt rather than waiting out the full TTL.
 ---@return table dispatcher
 function Defense.New(cfg)
     local self = setmetatable({ cfg = cfg }, Dispatcher)
@@ -165,6 +280,10 @@ function Defense.New(cfg)
     -- attempt against that key. Replaces the panic-key last_save_t=0 hack
     -- that the v0.5.37 panic_override_until window used.
     self._force_bypass        = {}
+    -- v0.5.110 chain composition: per-category memo of composed chains.
+    -- Valid because cfg.ability_injections / cfg.exclusions are static
+    -- after load (documented in the cfg docblock above).
+    self._composed_cache      = {}
     return self
 end
 
@@ -221,6 +340,67 @@ function Dispatcher:ResolveSaveOrder(threat_mod, category_hint, ability_name, ct
         if hero then
             pick_log("hero_override", hero[1] or "-")
             picked, authoritative = hero, true
+        end
+    end
+    -- v0.5.110 tier 3 (Lina/CHAIN_COMPOSITION_DESIGN.md sec 3.2): COMPOSED
+    -- category chain. Fires only for heroes that registered composition
+    -- cfg (cfg.ability_injections and/or cfg.exclusions); heroes without
+    -- it (Sniper) skip this block entirely and resolve exactly as before
+    -- (additive). The backbone is the RAW lib TD.CATEGORY_CHAINS entry,
+    -- NOT c.category_chains: hero category patches stay a tier-4/5
+    -- fallback, while composed resolutions express hero preference via
+    -- injections/exclusions only (spec sec 5 proof case). Composed chains
+    -- are AUTHORITATIVE: the hero declared its anchors deliberately, so
+    -- they bypass the kind/tether filters exactly like hand-curated
+    -- overrides. Composition inputs are static after load, so the result
+    -- memoizes per category in self._composed_cache (ResolveSaveOrder
+    -- runs per armed threat per tick; composing every call would be the
+    -- per-tick alloc class the v0.5.83 pass removed from this function).
+    if not picked and (c.ability_injections or c.exclusions) then
+        local category = (threat_mod and c.TD.CategoryOf and c.TD.CategoryOf(threat_mod))
+                         or category_hint
+        local backbone = category and c.TD.CATEGORY_CHAINS
+                         and c.TD.CATEGORY_CHAINS[category]
+        if backbone then
+            local cache_key = category .. "|" .. (threat_mod or "")
+            local composed = self._composed_cache[cache_key]
+            if not composed then
+                -- counter-filter the ITEM backbone by the live threat. Hero
+                -- ability injections are spliced AFTER and are never filtered.
+                local filtered = {}
+                for i = 1, #backbone do
+                    if (not c.TD.SaveCounters)
+                       or c.TD.SaveCounters(backbone[i], threat_mod) then
+                        filtered[#filtered + 1] = backbone[i]
+                    end
+                end
+                local inj
+                if c.ability_injections then
+                    inj = {}
+                    for i = 1, #c.ability_injections do
+                        local e = c.ability_injections[i]
+                        local cats, match = e.categories, false
+                        if cats == "*" then match = true
+                        elseif type(cats) == "table" then
+                            for j = 1, #cats do
+                                if cats[j] == category then match = true; break end
+                            end
+                        end
+                        if match then inj[#inj + 1] = e end
+                    end
+                end
+                composed = Defense.ComposeChain(
+                    filtered, inj, c.exclusions and c.exclusions[category])
+                self._composed_cache[cache_key] = composed
+            end
+            if #composed > 0 then
+                pick_log("composed", composed[1] or "-")
+                picked, authoritative = composed, true
+            else
+                -- whole backbone excluded + no injections: mirror the
+                -- lib_patched_empty fall-through (tiers 4-6 still run).
+                pick_log("composed_empty", "-")
+            end
         end
     end
     if not picked and threat_mod then
@@ -410,6 +590,35 @@ local function get_live_lock(c, domain, t_idx, canonical_mod, k_idx)
     return entry
 end
 
+-- Local helper (v0.5.127): decide whether a HELD lock should be released early
+-- so an incoming (re-engage) dispatch can proceed. Opt-in -- returns false
+-- unless cfg.item_on_cd is registered, so heroes that do not register it
+-- (Sniper) keep the v0.5.40 full-TTL behaviour byte-for-byte.
+--
+-- Lifecycle after a successful fire stamped entry.save_short:
+--   elapsed < coalesce floor               -> false (coalesce same-instance paths)
+--   past floor, save confirmed on CD        -> true  (spent; re-dispatch skips it
+--                                                      via not_ready, fires next save)
+--   past give-up window, still not on CD    -> true  (issue never took; re-attempt)
+--   past floor, not on CD, within give-up   -> false (still confirming the cast)
+-- The resolved TTL (lazy expiry in get_live_lock) is the unconditional upper
+-- backstop, so a lock is never held LONGER than v0.5.40 -- only released sooner.
+local function lock_cd_released(c, entry, now_t)
+    if not c.item_on_cd then return false end
+    local short = entry and entry.save_short
+    -- Unnameable fires (offensive thunk co-cast, or a fire that never stamped
+    -- save_short) are not CD-checkable; they keep the full resolved TTL.
+    if not short or short == "thunk" then return false end
+    local elapsed = now_t - (entry.fire_t or now_t)
+    local coalesce = c.lock_cd_coalesce_s or DEFAULT_LOCK_CD_COALESCE_S
+    if elapsed < coalesce then return false end
+    local ok, on_cd = pcall(c.item_on_cd, short)
+    if ok and on_cd then return true end
+    local giveup = c.lock_cd_giveup_s or DEFAULT_LOCK_CD_GIVEUP_S
+    if elapsed >= giveup then return true end
+    return false
+end
+
 -- Local helper: clamp resolver eta to [FLOOR, CAP], then add lock_buffer.
 -- v0.5.40 verifier fix: removed the c.reaction_window intermediate fallback
 -- so the documented cfg.lock_buffer_s default (0.3) is honoured. The earlier
@@ -511,7 +720,24 @@ function Dispatcher:_TryAcquireLockOnDomain(domain, target_unit, canonical_mod, 
     if not bypassed then
         local existing = get_live_lock(c, domain, t_idx, mod_key, k_idx)
         if existing then
-            return false, existing
+            -- v0.5.127: CD-aware early release. Past the coalesce floor a new
+            -- dispatch on the same tuple is a genuine re-engage; drop the lock
+            -- when the fired save is confirmed spent (or the give-up window
+            -- elapsed without it entering CD) so THIS dispatch proceeds and the
+            -- chain walker fires the next ready save (e.g. Pike spent -> WW).
+            -- Opt-in via cfg.item_on_cd; no-op otherwise -> v0.5.40 behaviour.
+            if lock_cd_released(c, existing, c.now()) then
+                domain[t_idx][mod_key][k_idx] = nil
+                c.tlog(2, "lock_cd_released", {
+                    domain     = ally_domain and "ally" or "self",
+                    target_idx = t_idx, mod = mod_key, caster_idx = k_idx,
+                    save       = existing.save_short or "-",
+                    held_s     = string.format("%.2f", c.now() - (existing.fire_t or c.now())),
+                })
+                -- fall through to acquire a fresh lock below
+            else
+                return false, existing
+            end
         end
     end
     -- Acquire. Build nested tables lazily.
@@ -733,6 +959,21 @@ function Dispatcher:Dispatch(intent, threat_mod, threat_caster, target_unit,
                              fire_thunk, category_hint, ability_name,
                              armed_entry, on_save_fired, ctx)
     local c = self.cfg
+    -- v0.5.98 BKB-bypass fix: hero-supplied veto for a threat a self-defense is
+    -- wasted on (Lina: one the active BKB fully absorbs). This is the SINGLE
+    -- self-save chokepoint (TrySaveSelf routes through Dispatch), so vetoing here
+    -- covers EVERY route -- the direct Dispatch callers (anim / modcreate / armed /
+    -- line-intercept / lotus) AND TrySaveSelf -- instead of only the hero's
+    -- try_save_self wrapper. Opt-in: heroes that do not register
+    -- cfg.threat_fully_blocked (Sniper) are byte-unaffected. Checked BEFORE the lock
+    -- acquire so a vetoed threat takes no lock slot. Offensive thunk co-casts pass a
+    -- threat_mod the hero predicate does not recognise, so they are naturally exempt.
+    if c.threat_fully_blocked and threat_mod
+       and c.threat_fully_blocked(threat_mod, target_unit) then
+        c.tlog(1, "dispatch_veto", { intent = intent, mod = tostring(threat_mod),
+            reason = "threat_fully_blocked" })
+        return false
+    end
     local canonical_mod = canon(c, threat_mod)
     local ttl = resolve_ttl(c, canonical_mod, threat_caster, target_unit, armed_entry, ability_name)
     local ok, existing = self:_TryAcquireLockOnDomain(
