@@ -1,5 +1,5 @@
 ---@meta
----lib/anim.lua , animation→ability map dispatcher.
+---lib/anim.lua - animation→ability map dispatcher.
 ---
 ---Heroes register per-matchup maps (`Anim.RegisterMap`) and particle
 ---signatures (`Anim.RegisterParticle`). OnUnitAnimation / OnParticleCreate
@@ -11,7 +11,7 @@
 ---    firehose rate).
 ---  • OnUnitAnimation tries integer activity first, then sequenceName string.
 ---  • Local hero animations are not dispatched (we know our own state).
----  • Stolen/invoked abilities (Rubick, Invoker) are out of scope for v1 ,
+---  • Stolen/invoked abilities (Rubick, Invoker) are out of scope for v1 -
 ---    TODO when the first such hero needs it.
 
 local Anim = {}
@@ -68,7 +68,7 @@ end
 ---Register an animation map for a unit (typically a hero short name like
 ---"npc_dota_hero_slark"). Map keys are either an `Enum.GameActivity` integer
 ---OR a sequence name string. Values are `{ability=, role=}` tables.
----Duplicate registrations merge , later keys overwrite earlier.
+---Duplicate registrations merge - later keys overwrite earlier.
 ---@param unit_name string
 ---@param map table<integer|string, AnimEntry|nil>
 function Anim.RegisterMap(unit_name, map)
@@ -160,7 +160,7 @@ local function compute_target_self(caster, ability_range, instant_target)
     -- projectile abilities (Pudge Hook, Lina LSA, Skywrath bolts) where
     -- the caster does face the target, so the gate stays for those.
     if instant_target then return true end
-    -- facing gate (FindRotationAngle is radians , math.deg before compare)
+    -- facing gate (FindRotationAngle is radians - math.deg before compare)
     local angle = math.deg(math.abs(NPC.FindRotationAngle(caster, me_pos)))
     if angle > DEFAULT_ANGLE_DEG then return false end
     return true
@@ -267,7 +267,7 @@ function Anim.OnParticleCreate_handler(data)
 
     -- v6.14.1 H5: `data.entity` is the cast SOURCE; `data.entityForModifiers`
     -- is who the spell HITS. The prior code aliased `caster` to
-    -- `entityForModifiers or entity` , for an enemy ult particle on Sniper,
+    -- `entityForModifiers or entity` - for an enemy ult particle on Sniper,
     -- this set ev.caster = Sniper (target), wrong. Provide both fields
     -- distinctly so subscribers can pick. `caster` now prefers entity (the
     -- source); `target` exposes entityForModifiers explicitly.

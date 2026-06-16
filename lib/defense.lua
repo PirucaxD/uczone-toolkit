@@ -1169,6 +1169,149 @@ function Dispatcher:TrySaveSelf(intent, threat_mod, threat_caster,
 end
 
 ----------------------------------------------------------------------------
+-- Dispatcher:HandleLineProjectile (v0.5.147 lib-first lift)
+----------------------------------------------------------------------------
+-- Line-projectile intercept: the general item-save mechanism for hooks /
+-- arrows / bolts that travel in a straight line and grab/stun the FIRST unit
+-- in their path (Pudge Hook, Mirana Arrow, Magnus Skewer, Sven Bolt, ES
+-- Fissure, Clockwerk Hookshot). Fires a perpendicular-distance displacement
+-- save (Force / Pike / Blink / WW via the line_projectile chain) in the
+-- projectile-create -> arrival window so the victim is pushed OUT of the line
+-- BEFORE it connects (OnModifierCreate fires only after the grab is committed).
+-- Byte-equivalent port of Lina's former hero-local OnLinearProjectileCreate body
+-- (same gates, same tlog stream, same Dispatch); only the data (opts.catalog =
+-- ThreatData.LINE_PROJECTILE_INTERCEPTS) + hero glue arrive via opts. Engine
+-- globals Entity / NPC / string are used directly (in lib scope); Target /
+-- NPCLib are project libs NOT in this module's scope, so is_enemy_hero / origin
+-- come via opts. The fire is self:Dispatch (this dispatcher). Opt-in: a hero
+-- gets this only by calling it from its OnLinearProjectileCreate (Sniper keeps
+-- its own duplicate until separately migrated).
+--
+-- opts = {
+--   me, catalog, tlog3 (bool), enabled()->bool, subsystem_on()->bool,
+--   origin(npc)->pos, uname(npc)->str, is_enemy_hero(src,me)->bool,
+--   dedup_responded(src,mod)->bool, dedup_mark(src,mod), record_save,
+--   fs_shard_window()->bool,
+-- }
+function Dispatcher:HandleLineProjectile(data, opts)
+    local c   = self.cfg
+    local tl3 = opts and opts.tlog3
+    local me  = opts and opts.me
+    -- v0.5.147.1 DIAGNOSTIC (temporary): unconditional entry log to settle
+    -- whether the framework delivers each projectile to OnLinearProjectileCreate.
+    -- The v0.5.147 demo showed only mirana/magnus reached line_projectile_seen,
+    -- but the skip reasons are level-3 (hidden if verbosity dropped < 3), so
+    -- absence of a log was NOT proof the callback never fired. This logs EVERY
+    -- invocation + raw src at level 1 (rare event -- the demo had ~4 total).
+    -- Remove once the hook-detection question is settled.
+    do
+        local s = data and data.source
+        local sn = "?"
+        if s and Entity.IsEntity(s) and Entity.IsNPC and Entity.IsNPC(s) then
+            sn = (opts and opts.uname and opts.uname(s)) or "?"
+        end
+        c.tlog(1, "olpc_entered", { src = sn })
+    end
+    if not me or not data then
+        if tl3 then c.tlog(3, "projectile_skip", { reason = "no_self_or_data" }) end
+        return
+    end
+    if opts.enabled and not opts.enabled() then
+        if tl3 then c.tlog(3, "projectile_skip", { reason = "defense_off" }) end
+        return
+    end
+    if opts.subsystem_on and not opts.subsystem_on() then
+        if tl3 then c.tlog(3, "projectile_skip", { reason = "subsystem_off" }) end
+        return
+    end
+    local src = data.source
+    if not src or not Entity.IsEntity(src) or not Entity.IsNPC(src) then
+        if tl3 then c.tlog(3, "projectile_skip", { reason = "src_not_npc" }) end
+        return
+    end
+    if not (opts.is_enemy_hero and opts.is_enemy_hero(src, me)) then
+        if tl3 then c.tlog(3, "projectile_skip", { reason = "src_not_enemy" }) end
+        return
+    end
+    local src_name = NPC.GetUnitName(src)
+    local entry = opts.catalog and opts.catalog[src_name]
+    if not entry then
+        if tl3 then c.tlog(3, "projectile_skip", { reason = "src_not_hook_caster" }) end
+        return
+    end
+    local me_pos   = opts.origin and opts.origin(me)
+    local origin   = data.origin or (opts.origin and opts.origin(src))
+    local velocity = data.velocity
+    if not me_pos or not origin or not velocity then
+        if tl3 then c.tlog(3, "projectile_skip", { reason = "missing_geometry", src = opts.uname(src) }) end
+        return
+    end
+    local vel_len = velocity:Length2D()
+    if vel_len < 1 then
+        if tl3 then c.tlog(3, "projectile_skip", { reason = "zero_velocity", src = opts.uname(src) }) end
+        return
+    end
+    local dir   = velocity:Normalized()
+    local to_me = me_pos - origin
+    local along = to_me:Dot(dir)
+    -- Heading-toward gate: origin behind us along travel axis -> reject; also
+    -- prevents firing on a projectile already past us (Sniper's along<0 gate).
+    if along < 0 then
+        if tl3 then c.tlog(3, "projectile_skip", { reason = "heading_away", src = opts.uname(src) }) end
+        return
+    end
+    local perp = (to_me - dir * along):Length2D()
+    if tl3 then
+        c.tlog(3, "line_projectile_seen", {
+            src   = opts.uname(src),
+            vel   = string.format("%.0f", vel_len),
+            perp  = string.format("%.0f", perp),
+            along = string.format("%.0f", along),
+        })
+    end
+    local fire_floor = entry.hit_radius + 75
+    if perp >= fire_floor then
+        if tl3 then
+            c.tlog(3, "line_projectile_skip", {
+                src    = opts.uname(src),
+                reason = "perp_over_floor",
+                perp   = string.format("%.0f", perp),
+                floor  = tostring(fire_floor),
+            })
+        end
+        return
+    end
+    -- Dedup key: prefer the canonical mod (matches OnModifierCreate's eventual
+    -- mark so the modifier-lands path no-ops); fissure (no mod) falls back to
+    -- "<ability>_incoming" -- unique per cast, no catalog-mod collision.
+    local dedup_mod = entry.threat_mod or (entry.ability .. "_incoming")
+    if opts.dedup_responded and opts.dedup_responded(src, dedup_mod) then
+        if tl3 then c.tlog(3, "projectile_skip", { reason = "dedup_hit", src = opts.uname(src), mod = dedup_mod }) end
+        return
+    end
+    c.tlog(1, "line_projectile_intercepted", {
+        src     = opts.uname(src),
+        ability = entry.ability,
+        perp    = string.format("%.0f", perp),
+        along   = string.format("%.0f", along),
+        floor   = tostring(fire_floor),
+    })
+    -- Mark dedup BEFORE the dispatch (and after the geometry gate), so a
+    -- no-save-available result still throttles the next per-projectile event
+    -- within THREAT_WINDOW (the v0.5.14 BL-A6 convention). Dispatch then routes
+    -- the displacement chain via category_hint="line_projectile" (the lock tuple
+    -- is (me, canonical(threat_mod), src); nil src/threat_mod collapse the lock
+    -- leg and fall through to the unlocked path, safe for fog projectiles).
+    if opts.dedup_mark then opts.dedup_mark(src, dedup_mod) end
+    self:Dispatch("line_intercept_" .. entry.ability,
+                  entry.threat_mod, src,
+                  me, nil,
+                  "line_projectile", entry.ability, nil,
+                  opts.record_save,
+                  { fs_shard_window = opts.fs_shard_window and opts.fs_shard_window() or false })
+end
+
+----------------------------------------------------------------------------
 -- ETA resolver factories (v0.5.74 lift from Lina LINA_ETA_RESOLVERS)
 ----------------------------------------------------------------------------
 --
