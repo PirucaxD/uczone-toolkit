@@ -274,6 +274,55 @@ end
 local TD = require("lib.threat_data")
 local ESCAPE_ITEMS = TD.ESCAPE_ITEM_NAMES
 
+----------------------------------------------------------------------------
+-- v0.5.152 - "cannot be killed right now" predicates (offensive-side target
+-- gating; companions to HasAegis / HasReadyLinkens / HasReadyLotus, placed here
+-- because HasUnkillableModifier reads the threat_data set TD required just above).
+-- Heroes call IsUnkillableNow to skip wasting a kill combo and prefer a killable
+-- target. WK Reincarnation has no off-CD modifier -> ability-readiness check.
+----------------------------------------------------------------------------
+
+local UNKILLABLE_MODIFIERS = TD.UNKILLABLE_MODIFIERS or {}
+
+---Target has an active modifier that prevents death (Dazzle Shallow Grave = min
+---HP 1; Oracle False Promise = damage/healing delayed, cannot die during it).
+---@param e userdata|nil
+---@return boolean
+function Target.HasUnkillableModifier(e)
+    if not e or not Entity.IsNPC(e) or not NPC.HasModifier then return false end
+    for mod in pairs(UNKILLABLE_MODIFIERS) do
+        if NPC.HasModifier(e, mod) then return true end
+    end
+    return false
+end
+
+---Wraith King will revive if killed now: Reincarnation leveled + off cooldown
+---(IsReady also covers the 220/110/0 mana cost). No off-CD modifier exists (VPK +
+---Sniper modseen), so this is an ability-readiness check, gated on the unit name so
+---GetAbility is only probed on WK. IsReady is coerced truthy (codebase convention,
+---never == true).
+---@param e userdata|nil
+---@return boolean
+function Target.WillReincarnate(e)
+    if not e or not Entity.IsNPC(e) then return false end
+    if not (NPC.GetUnitName and NPC.GetUnitName(e) == "npc_dota_hero_skeleton_king") then
+        return false
+    end
+    if not (NPC.GetAbility and Ability and Ability.GetLevel and Ability.IsReady) then return false end
+    local reinc = NPC.GetAbility(e, "skeleton_king_reincarnation")
+    if not (reinc and Ability.GetLevel(reinc) > 0) then return false end
+    return Ability.IsReady(reinc) and true or false
+end
+
+---Combined: target cannot be killed right now (death-preventing modifier OR WK
+---Reincarnation ready). The single predicate heroes gate kill-commit and target
+---selection on.
+---@param e userdata|nil
+---@return boolean
+function Target.IsUnkillableNow(e)
+    return Target.HasUnkillableModifier(e) or Target.WillReincarnate(e)
+end
+
 ---Target has an off-CD invuln / dispel / magic-immune item in active slots.
 ---Used by combo selection to bias toward grenade-first sequences (interrupt
 ---their cast point) and away from R-only against equipped backliners.

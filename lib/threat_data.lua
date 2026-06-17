@@ -3801,6 +3801,19 @@ ThreatData.SPELL_DEFLECT_MODIFIERS = {
     modifier_nyx_assassin_spiked_carapace = true,
 }
 
+-- v0.5.152: targets that CANNOT be killed right now, so the brain must not waste a
+-- kill combo on them and should prefer a killable target. Modifier-on-target rules
+-- only (WK Reincarnation has NO off-cooldown modifier; it is an ability-readiness
+-- check in lib/target.lua Target.WillReincarnate). Verified: modifier_dazzle_shallow_grave
+-- is VPK-confirmed (sets min HP to 1). The bare modifier_oracle_false_promise is
+-- C++-only (no VPK KV string) but DOES land on the target -- modseen-confirmed
+-- 2026-06-17 (unit=sniper mod=modifier_oracle_false_promise caster=oracle), so the
+-- redundant _timer variant was pruned. Iterated by Target.HasUnkillableModifier.
+ThreatData.UNKILLABLE_MODIFIERS = {
+    modifier_dazzle_shallow_grave = true,
+    modifier_oracle_false_promise = true,
+}
+
 ----------------------------------------------------------------------------
 -- v0.5.40 TIER 0 (A2): canonical-modifier-name resolution
 --
