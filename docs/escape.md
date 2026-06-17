@@ -1,125 +1,160 @@
 # escape
 
-Danger-aware "where should the defender go" picker. Three small helpers,
-all stateless, all take the defender entity as an explicit arg (no
-implicit hero-state reads).
+Danger-aware position picking for self-displacement saves and offensive
+pushes. Hero-agnostic: every function takes entity / Vector arguments
+explicitly (no hidden hero-state reads), matching the geometry lib
+convention. Distances are Hammer units.
 
-The reason for sharing this is the picking loop. Defensive items that
-move the hero (Force Staff, Hurricane Pike, blink) only help when the
-destination is meaningfully safer than the current spot. A push that
-lands you next to a backliner because the straight-away vector points
-right at them is a save that fired and did not save. The original use
-case was Sniper's Pike-on-self: the picker checks 7 angles off the
-straight-away axis and ranks landings by proximity-weighted enemy
-density, so the brain stops shoving the hero into the worst possible
-spot.
+Nothing here issues an order. These are stateless decision-support helpers
+that return positions, scores, or booleans; the hero script decides what to
+do with them. The few stateful harnesses (the turn-then-fire and
+re-issue-while-airborne tickers) keep their state in a caller-owned `pending`
+struct and reach the engine through a `cfg` callback bundle, so the lib never
+imports a hero's wrappers directly.
 
-## Setup
+## Danger scoring
+
+`DangerAtPos` is the core primitive: a proximity-weighted count of visible
+enemy heroes near a position, scaled down by a turn-cost factor that biases
+toward landings forcing the enemy to swing far off their current facing (the
+chase-turn delay is free distance for the defender). Lower is safer. Towers
+are intentionally not counted - there is no clean enemy-tower-in-radius API,
+and the hero-only term closes the documented blind spot.
+
+`SafePushDestination` validates one candidate landing: terrain traversability,
+plus either a "must increase distance from this specific threat" gate (when the
+threat caster is known) or a centroid-danger check against the current spot.
+`PickDir` runs the search. It tries seven angles off straight-away from the
+threat (`0, -35, 35, -65, 65, -90, 90` degrees), gates each through
+`SafePushDestination` and an optional caller filter, and returns the unit
+escape direction plus landing of the safest survivor. Ties favour the
+straight-away baseline.
+
+| Function | Returns |
+|----------|---------|
+| `DangerAtPos(me, pos)` | danger score at `pos` (higher = more dangerous), `0` if invalid |
+| `SafePushDestination(me, dest_pos, threat_caster_hint, danger_now)` | `dest_pos` if the landing passes terrain and the threat / centroid gate, else `nil`; second return is the landing danger for reuse |
+| `PickDir(me, me_pos, toward_threat, push_distance, threat_caster_hint, filter_fn)` | `(escape_dir, landing)` of the safest of 7 angles, `(nil, nil)` if all rejected |
+
+## Self-displacement saves
+
+`ComputeSafeDest` is the high-level "where do I escape TO". It builds the
+toward-threat direction (the known caster if alive, otherwise the centroid of
+enemy heroes within 1500u), hands off to `PickDir`, and returns the escape
+direction and landing. The optional `threat_pos` lets the caller pass a
+predicted position so the push aims away from where a charging threat is
+heading rather than where it currently sits.
 
 ```lua
 local Escape = require("lib.escape")
-local Target = require("lib.target")  -- escape uses Target internally
-```
 
-## DangerAtPos
-
-```lua
-local score = Escape.DangerAtPos(me, pos)
-```
-
-Proximity-weighted enemy-hero score at a world position. Lower is
-safer. Each visible enemy hero within 1400u of `pos` contributes
-`(1 - d/1400) * 30`, scaled by a turn-cost factor: landings that
-force the enemy to turn far from their current facing rank as safer
-because the turn delay during chase is free distance for the
-defender. Towers and creeps are intentionally not counted - the
-hero-only term closes the documented blind spot and avoids
-overweighting wave positions.
-
-Used inside `SafePushDestination` as the centroid-fallback gate and
-inside `PickDir` as the ranker.
-
-## SafePushDestination
-
-```lua
-local landing = Escape.SafePushDestination(me, dest_pos, threat_caster_hint)
-if landing then ... end
-```
-
-Validates a candidate landing. Returns the destination on success,
-`nil` on rejection. Three checks:
-
-1. Terrain via `GridNav.IsTraversableFromTo(me_pos, dest_pos)`.
-2. When a specific threat caster is known, the destination must
-   INCREASE distance from that threat (avoids pushing the defender
-   into the very threat the save is meant to escape).
-3. Centroid fallback via `DangerAtPos` when no specific threat is
-   known: a destination meaningfully more dangerous than the current
-   spot is rejected (margin = 12 against the ~30 per-enemy scale,
-   avoids flapping on a marginal diff).
-
-## PickDir
-
-```lua
-local escape_dir, landing = Escape.PickDir(
-    me, me_pos, toward_threat, push_distance,
-    threat_caster_hint, filter_fn  -- both optional
-)
-if escape_dir then
-    -- escape_dir is the unit vector from me to landing
-    -- landing is the chosen destination
+local dir, landing = Escape.ComputeSafeDest(me, threat_caster, 600)
+if landing then
+    -- the hero decides how to act on it; the lib never issues the order
 end
 ```
 
-7-angle danger-aware destination picker. Tries angles
-`{0, -35, 35, -65, 65, -90, 90}` (degrees) off straight-away from
-`toward_threat`. Each candidate is gated by `SafePushDestination`
-plus the optional `filter_fn(esc_dir, landing) -> bool`, then ranked
-by `DangerAtPos` (lower is safer). Ties favor 0° via strict
-less-than - a marginal angle does not win over the straight-away
-baseline unless meaningfully safer.
+`TrySelfPush` and `SelfPushTick` are the turn-then-fire harness behind Pike and
+Force self-casts. `TrySelfPush` computes the destination and either fires
+immediately (already facing within 30 degrees of the escape direction) or
+issues a turn and returns a `pending` struct. The caller stashes that struct and
+feeds it to `SelfPushTick` once per frame; the tick fires once facing aligns, or
+drops the pending on timeout / threat-gone.
 
-The `filter_fn` is for callers that need extra per-candidate
-constraints. A grenade-self save that needs the cast point to face
-within 120° of the chosen escape direction can pass a filter that
-returns true only when the angle check passes; the picker will skip
-candidates that fail the filter even if they pass the danger
-ranking.
+`QueueSafePostMove` and `PostAirborneMoveTick` are the re-issue-while-airborne
+harness behind Eul and Windwaker (the airborne save is cast before this call;
+these only stage the landing walk). `QueueSafePostMove` queues a
+`MOVE_TO_POSITION` to a safe landing and returns a `pending`;
+`PostAirborneMoveTick` waits for the airborne modifier to appear, then either
+defers until it clears (Eul: no movement during the disable) or re-issues the
+move while airborne (Windwaker: free pathing mid-lift), recomputing the
+destination from the threat's live position each re-issue.
 
-Returns `(nil, nil)` when every candidate failed terrain or the
-threat-distance gate. The caller falls through to the next save in
-the chain.
+All four ticker entry points take a `cfg` table of hero-side callbacks
+(`safe_issue`, `issue_item_self`, `tlog`, `now`, `uname`, `item_get`,
+`item_ready`, optional `on_self_cast`, plus `hero_key` / `layer`). The lib calls
+back through these so it stays free of any specific hero's wrappers.
 
-## Typical caller shape
+| Function | Returns |
+|----------|---------|
+| `ComputeSafeDest(me, threat_caster, push_distance, threat_pos)` | `(escape_dir, landing)`, `(nil, nil)` if no direction or all candidates rejected |
+| `TrySelfPush(me, intent, item, item_name, push_dist, threat_caster, cfg, threat_pos)` | `(pending, ok)`: `pending` to stash (`nil` on immediate fire / skip), `ok` whether an action issued |
+| `SelfPushTick(me, pending, cfg)` | updated `pending` (`nil` once fired / timed out / threat gone) |
+| `QueueSafePostMove(me, intent, push_dist, threat_caster, modifier_name, moves_during_airborne, cfg)` | `pending` to stash, `nil` if no safe destination |
+| `PostAirborneMoveTick(me, pending, cfg)` | updated `pending` (`nil` once arrived / expired / dead) |
 
-The hero's defensive `.fire` body computes `toward` (caster
-direction or enemy-centroid fallback), picks a direction, optionally
-checks current facing (cyclones / pushes that move along facing need
-the hero turned the right way first), then issues the save.
+## Fog and gank awareness
+
+`FogSnapshot` builds the shared per-call enemy roster: every living enemy hero,
+visible or fogged. Visible enemies carry their true origin (`age = 0`); fogged
+enemies carry their last-known position plus a `probable_radius` that grows with
+time-since-seen (capped at 700 MS, 30s age) to model where they could have
+moved. Pass the returned snapshot as `opts.snapshot` to the consumers below so
+several checks in one frame share a single scan instead of each rescanning.
+
+`NearbyEnemiesIncludingFog` counts enemies whose current possible position could
+reach within a radius of a point. `AdvanceRiskScore` turns that into a composite
+score (visible enemies weighted by closeness, fog enemies half-weighted for
+uncertainty); the suggested read is `<= 30` safe, `30-60` risky, `> 60` abort,
+but the caller picks the threshold.
+
+`PossibleGankers` and `GankImminent` answer "who can reach this spot within N
+seconds", `MissingFromMap` lists enemies off the minimap longest-first, and
+`InitiatorAccountedFor` checks a named set of heroes for visibility (gate a combo
+on "is their initiator visible"). `SafestSpotNear` grid-searches the eight points
+around the defender plus the centre, scoring each via `AdvanceRiskScore` against
+one shared snapshot, and returns the least dangerous.
 
 ```lua
-local toward = (caster_pos - me_pos):Normalized()
-local escape_dir, landing = Escape.PickDir(me, me_pos, toward, 600, caster)
-if not escape_dir then return false end
+local Escape = require("lib.escape")
 
--- Pike push is 600u along facing. If we are already facing within
--- 30 degrees of the chosen direction, fire immediately; otherwise
--- turn first via a move order and arm a pending-tick that fires the
--- push once alignment is reached.
-local angle = math.deg(math.abs(NPC.FindRotationAngle(me, landing)))
-if angle <= 30 then
-    return issue_self_cast(pike)
+local snap = Escape.FogSnapshot(me)                       -- one scan
+if Escape.GankImminent(me, Entity.GetAbsOrigin(me), 3.0, 2,
+                       { snapshot = snap }) then
+    local spot, score = Escape.SafestSpotNear(me, 700,
+                                              { snapshot = snap })
+    -- retreat toward `spot`; the hero issues the move, not the lib
 end
--- queue MOVE_TO_POSITION landing; tick checks angle each frame
 ```
 
-## Engine gotchas the helpers do NOT solve
+| Function | Returns |
+|----------|---------|
+| `FogSnapshot(me, opts)` | `{ t, heroes = {{entity, pos, age, probable_radius, visible}} }` for all living enemies |
+| `NearbyEnemiesIncludingFog(me, pos, radius, opts)` | `(visible_count, fog_count, list)` of enemies that could reach near `pos` |
+| `AdvanceRiskScore(me, landing, opts)` | `(score, breakdown)` composite danger at `landing` (lower = safer) |
+| `PossibleGankers(me, pos, eta_s, opts)` | `{ gankers = {{entity, eta_seconds, dist, visibility, age}}, summary }` sorted by ETA |
+| `GankImminent(me, pos, eta_s, min_count, opts)` | `(imminent, gankers)`: are `>= min_count` (default 2) enemies arrivable within `eta_s` |
+| `MissingFromMap(me, min_age_s, opts)` | list of `{entity, age, last_pos}` off-map at least `min_age_s` (default 5), longest first |
+| `InitiatorAccountedFor(me, initiator_names, opts)` | `{accounted, missing, visible, unmatched}` for a list of `npc_dota_hero_*` names |
+| `SafestSpotNear(me, radius, opts)` | `(best_pos, best_score)` of the least dangerous of 9 grid samples |
 
-These bite at the caller layer, not inside `Escape`:
+## Offensive advance
 
-- `NPC.FindRotationAngle` returns radians, not degrees. The 30°
-  tolerance compare above only works because of the `math.deg` call.
-  Without it the comparison is always true and the hero never turns.
-- The first cast of a freshly-acquired item is silently dropped by
-  the engine. Items like Hurricane Pike need a prime-cast workaround
-  or a re-issue if the first cast looks like it failed.
+The inverse of `ComputeSafeDest`: instead of "where do I escape TO", these ask
+"is it safe to push TOWARD this enemy, and where do I land". Built for an
+offensive Pike self-cast (push 600u along facing), but the geometry is reusable
+for any directional push.
+
+`PikeAdvanceLanding` is the pure geometry (a point `push_dist` along the facing
+toward a target). `ComputeAdvanceDest` wraps it: accept a hero entity or a
+Vector, compute the landing, score it with `AdvanceRiskScore`, and return
+`(landing, score, breakdown)` so the caller decides fire-or-skip against its own
+threshold. `BlinkInLanding` picks a blink destination that brings the target
+within engage range while diving as little as possible (near edge) and never
+beyond the blink range, returning the landing, its risk score, and whether the
+target is actually reachable.
+
+```lua
+local Escape = require("lib.escape")
+
+local landing, score = Escape.ComputeAdvanceDest(me, target, 600)
+if landing and score <= 30 then   -- caller-chosen threshold
+    -- safe to push in; the hero fires the item itself
+end
+```
+
+| Function | Returns |
+|----------|---------|
+| `PikeAdvanceLanding(me_pos, target_pos, push_dist)` | landing `push_dist` units toward `target_pos`, `nil` on zero direction |
+| `ComputeAdvanceDest(me, target, push_dist, opts)` | `(landing, score, breakdown)` for a push toward `target` (hero or Vector), `(nil, nil, nil)` if invalid |
+| `BlinkInLanding(me, aim_pos, blink_range, engage_range, opts)` | `(landing, risk_score, reachable)` for a blink that engages `aim_pos` |

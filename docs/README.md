@@ -11,7 +11,8 @@ real reference; these pages are the "do I want this lib at all?" overview.
 
 | Lib | What it does |
 |-----|--------------|
-| [geometry](geometry.md) | 2D distance, direction, angles, cones, segment math |
+| [geometry](geometry.md) | 2D distance, movement prediction, AoE / line placement |
+| [farm](farm.md) | pick the line / point that hits the most creeps for wave-clear |
 | [prediction](prediction.md) | where to aim so a projectile meets a moving target |
 | [log](log.md) | leveled + throttled logging, so a per-frame log call can't spam |
 | [menu](menu.md) | a builder over `Menu.Create` - create widgets by name, read them by name |
@@ -36,6 +37,8 @@ real reference; these pages are the "do I want this lib at all?" overview.
 | [timing](timing.md) | will the target be invuln / dispel out of my combo? |
 | [save_select](save_select.md) | given a threat, rank which of my save items actually counter it |
 | [defense](defense.md) | a save-dispatcher with a per-(target, mod, caster) lock so two of your fire paths can't double-save against one threat |
+| [escape](escape.md) | danger-aware positioning: self-displacement saves, fog / gank awareness, pike-advance |
+| [item_saves](item_saves.md) | hero-agnostic defensive item save bodies (BKB, Lotus, Force, Pike, cyclones, blink...) |
 
 **Static game data** - generated from Valve's KV files (see `tools/`):
 

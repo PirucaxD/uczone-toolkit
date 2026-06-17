@@ -19,9 +19,11 @@ is half the point.
 Full overview lives in [docs/](docs/), one page per lib. The short version:
 
 **Building blocks** - small, general, drop in anywhere:
-`geometry` (2D math, cones, segment collision), `prediction` (aim a
-projectile at a moving target), `log` (leveled + throttled logging),
-`menu` (a builder over `Menu.Create`), `npc`, `dedup`, `signal`.
+`geometry` (2D math, movement prediction, AoE / line placement),
+`farm` (pick the line / point that clears the most creeps),
+`prediction` (aim a projectile at a moving target), `log` (leveled +
+throttled logging), `menu` (a builder over `Menu.Create`), `npc`,
+`dedup`, `signal`.
 
 **Event plumbing** - wire once, then forget:
 `order` (one validated chokepoint for every order you issue), `damage`
@@ -38,7 +40,8 @@ items; ranks 7 angles off straight-away by enemy density so the
 brain stops shoving you into the worst possible spot),
 `defense` (a full save-dispatcher with a per-(target, mod, caster)
 lock domain so two of your fire paths can't double-save against one
-threat).
+threat), `item_saves` (hero-agnostic defensive item save bodies: BKB,
+Lotus, Force, Pike, cyclones, blink, and more).
 
 **Static game data**, generated from Valve's KV files:
 `item_data`, `ability_data`, `unit_data`, `hero_data`, `threat_data`.
@@ -52,7 +55,7 @@ you want:
 local geometry = require("lib.geometry")
 local Order    = require("lib.order")
 
-local dist = geometry.dist2d(me, enemy)
+local dist = geometry.dist_between(me, enemy)
 ```
 
 The data libs are pure - just require and read. The event libs need a

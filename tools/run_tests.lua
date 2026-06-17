@@ -70,6 +70,7 @@ GlobalVars.GetCurTime = function() return 0 end
 
 Enum = Enum or {}
 Enum.ModifierState = setmetatable({}, { __index = function(_, k) return k end })
+Enum.TeamType      = setmetatable({}, { __index = function(_, k) return k end })
 
 -- Logger stub: the native leveled logger that lib/log.lua builds on
 Logger = Logger or function(name)
@@ -203,51 +204,72 @@ end)
 
 local G = require("lib.geometry")
 
-describe("geometry - distance and direction", function()
-    it("dist2d is a 3-4-5 triangle", function()
-        assert_eq(G.dist2d(Vector(0, 0, 0), Vector(300, 400, 0)), 500)
+-- entity stub: Entity.IsEntity checks .is_entity; GetAbsOrigin reads .pos.
+local function gent(x, y) return { is_entity = true, idx = 0, pos = Vector(x, y, 0) } end
+
+describe("geometry - distance", function()
+    it("dist_between is a 3-4-5 triangle", function()
+        assert_eq(G.dist_between(gent(0, 0), gent(300, 400)), 500)
     end)
-    it("within respects the radius", function()
-        assert_true(G.within(Vector(0, 0, 0), Vector(300, 400, 0), 500))
-        assert_false(G.within(Vector(0, 0, 0), Vector(300, 400, 0), 499))
+    it("dist_between is nil-safe (math.huge)", function()
+        assert_eq(G.dist_between(nil, gent(0, 0)), math.huge)
+        assert_eq(G.dist_between(gent(0, 0), nil), math.huge)
     end)
-    it("direction is normalized", function()
-        local d = G.direction(Vector(0, 0, 0), Vector(300, 400, 0))
-        assert_near(d.x, 0.6); assert_near(d.y, 0.8)
-    end)
-    it("extend overshoots the endpoint", function()
-        local e = G.extend(Vector(0, 0, 0), Vector(300, 400, 0), 500)
-        assert_near(e.x, 600); assert_near(e.y, 800)
-    end)
-    it("clamp_distance caps the reach", function()
-        local c = G.clamp_distance(Vector(0, 0, 0), Vector(300, 400, 0), 250)
-        assert_near(G.dist2d(Vector(0, 0, 0), c), 250)
+    it("dist_from_to aliases dist_between", function()
+        assert_eq(G.dist_from_to(gent(0, 0), gent(300, 400)), 500)
     end)
 end)
 
-describe("geometry - angles and cones", function()
-    it("angle_between a right angle is 90", function()
-        assert_near(G.angle_between(Vector(100, 0, 0), Vector(0, 0, 0),
-                                    Vector(0, 100, 0)), 90)
+describe("geometry - prediction (no lead without motion)", function()
+    it("lead_target_pos returns current pos for a non-moving target", function()
+        local p = G.lead_target_pos(gent(100, 200), nil, 1.5)
+        assert_near(p.x, 100); assert_near(p.y, 200)
     end)
-    it("point_in_cone accepts a point inside", function()
-        assert_true(G.point_in_cone(Vector(0, 0, 0), Vector(1, 0, 0),
-                                    Vector(100, 10, 0), 45, 1000))
+    it("PredictPos returns current pos for an un-sampled target", function()
+        local p = G.PredictPos(gent(100, 200), 1.5)
+        assert_near(p.x, 100); assert_near(p.y, 200)
     end)
-    it("point_in_cone rejects a point outside", function()
-        assert_false(G.point_in_cone(Vector(0, 0, 0), Vector(1, 0, 0),
-                                     Vector(0, 100, 0), 20, 1000))
+    it("PredictPos is nil for an invalid target", function()
+        assert_true(G.PredictPos(nil, 1.0) == nil)
     end)
 end)
 
-describe("geometry - segments", function()
-    it("dist_to_segment finds the perpendicular", function()
-        assert_near(G.dist_to_segment(Vector(0, 0, 0), Vector(100, 0, 0),
-                                      Vector(50, 30, 0)), 30)
+describe("geometry - smoothed velocity", function()
+    it("SampleVelocities feeds PredictPos a real lead", function()
+        local clock = 0
+        local saved_time   = GlobalVars.GetCurTime
+        local saved_radius = Entity.GetHeroesInRadius
+        GlobalVars.GetCurTime = function() return clock end
+        local mover = gent(0, 0); mover.idx = 77
+        Entity.GetHeroesInRadius = function() return { mover } end
+        -- two samples 0.1s apart, moving +x at 500 u/s
+        clock = 0.0; mover.pos = Vector(0, 0, 0);  G.SampleVelocities(gent(0, 0), 1600)
+        clock = 0.1; mover.pos = Vector(50, 0, 0); G.SampleVelocities(gent(0, 0), 1600)
+        local p = G.PredictPos(mover, 1.0)         -- 50 (current) + 500*1.0 (lead)
+        assert_near(p.x, 550)
+        Entity.GetHeroesInRadius = saved_radius
+        GlobalVars.GetCurTime    = saved_time
     end)
-    it("segment_hits_circle detects a clip", function()
-        assert_true(G.segment_hits_circle(Vector(0, 0, 0), Vector(100, 0, 0),
-                                          Vector(50, 20, 0), 25))
+end)
+
+describe("geometry - AoE / line placement", function()
+    it("BestAoeCenter finds the densest cluster", function()
+        local units = { gent(0, 0), gent(50, 0), gent(60, 30), gent(1000, 1000) }
+        local center, hit = G.BestAoeCenter(units, 250, 0)
+        assert_eq(hit, 3, "cluster of 3 within 250")
+        assert_true(center ~= nil)
+    end)
+    it("BestLineAim picks the densest direction", function()
+        local units = { gent(200, 0), gent(400, 0), gent(600, 0), gent(0, 400) }
+        local aim, hit = G.BestLineAim(units, Vector(0, 0, 0), 110, 1075, 0)
+        assert_eq(hit, 3, "expected 3 on the +x line")
+        assert_true(aim ~= nil and aim.x > aim.y, "aim should point +x")
+    end)
+    it("empty inputs are safe", function()
+        local c, h1 = G.BestAoeCenter({}, 250, 0)
+        assert_true(c == nil and h1 == 0)
+        local a, h2 = G.BestLineAim({}, Vector(0, 0, 0), 110, 1075, 0)
+        assert_true(a == nil and h2 == 0)
     end)
 end)
 

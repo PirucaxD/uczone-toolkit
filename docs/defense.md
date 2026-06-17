@@ -116,6 +116,41 @@ local dispatcher = Defense.New {
 | `dispatcher:CanFire()` | Throttle gate. Returns true iff `now - last_save_t >= cfg.reaction_window`. |
 | `dispatcher:MarkFired(threat_caster)` | Writes `cfg.throttle_state.last_save_t = cfg.now()`. The lib does NOT call this on its own; the hero's on_save_fired callback does, so heroes that need the chain to pass through their own bookkeeping keep ownership. |
 | `dispatcher:CountConcurrentExcluding(armed_entry)` | Counts armed_threats rows excluding `armed_entry` by handle identity. Used inside the reserve-penalty math; also exposed so a hero-side chain peek can mirror the same count. |
+| `dispatcher:HandleLineProjectile(data, opts)` | The lifted line-projectile intercept. Call from an `OnLinearProjectileCreate` hook; fires a perpendicular-distance displacement save before the projectile connects. See [Line-projectile intercept](#line-projectile-intercept). |
+
+## Composing a chain (`Defense.ComposeChain`)
+
+`Defense.ComposeChain(item_chain, injections, exclusions)` is the pure
+save-chain composer. It is what `ResolveSaveOrder` uses internally to build a
+composed category chain, and heroes call it directly to assemble bespoke chains
+at load time. PURE: no engine calls, no dispatcher state, safe at hero load. It
+NEVER mutates `item_chain` (typically the shared `TD.CATEGORY_CHAINS` entry) and
+always returns a new list.
+
+The algorithm, in order:
+
+1. **filter exclusions** - drop any name in `exclusions` (a
+   `{ item_name = true }` set) from the item backbone.
+2. **splice injections** - each injection `{ save = "name", anchor = ... }`, in
+   declared order, is placed at its anchor: `"head"` -> position 1; `"tail"` ->
+   appended; `{ before = "X" }` -> immediately before the first `X`;
+   `{ after = "X" }` -> immediately after the first `X`. If the before/after
+   target is absent (or the anchor is `nil` / unrecognized) the save goes to the
+   tail. A save is ALWAYS placed, never dropped.
+3. **dedupe, first occurrence wins** - so an injected save that is also in the
+   backbone MOVES to its anchor when anchored earlier (the committed-ranged
+   cyclone-to-head case relies on this).
+
+```lua
+local chain = Defense.ComposeChain(
+    TD.CATEGORY_CHAINS["close_gap"],            -- item backbone (not mutated)
+    { { save = "lina_flame_cloak", anchor = "head" } },
+    { item_blink = true })                       -- exclude from this chain
+```
+
+| Function | Returns |
+|----------|---------|
+| `Defense.ComposeChain(item_chain, injections, exclusions)` | a NEW composed chain list; filters `exclusions`, splices `injections` at their anchors, dedupes first-wins, never mutates `item_chain` |
 
 ## A typical dispatch
 
@@ -217,3 +252,107 @@ one fire. So the contract is: the callback owns it. The lib's
 dispatcher:MarkFired`. Heroes that bypass the chain walk and fire
 directly (a fast-path lotus, an ally-save closure) call `MarkFired`
 through the same record_save adapter.
+
+## Line-projectile intercept
+
+`dispatcher:HandleLineProjectile(data, opts)` is the general item-save mechanism
+for hooks / arrows / bolts that travel in a straight line and grab or stun the
+FIRST unit in their path (Pudge Hook, Mirana Arrow, Magnus Skewer, Sven Bolt,
+ES Fissure, Clockwerk Hookshot). It computes the projectile geometry, and if you
+are inside the line, fires a perpendicular-distance displacement save (Force /
+Pike / Blink / WW via the `line_projectile` chain) in the
+projectile-create -> arrival window, so you are pushed OUT of the line BEFORE it
+connects. An `OnModifierCreate`-based save only fires AFTER the grab is already
+committed; this is the earlier route.
+
+Call it from your `OnLinearProjectileCreate` hook, passing the raw event `data`
+(the lib reads `data.source`, `data.origin`, `data.velocity`) and an `opts`
+table of hero glue. The fire goes through this same dispatcher's `Dispatch` with
+`category_hint = "line_projectile"`, so the per-threat lock still applies. Only
+the data and glue arrive via `opts`; the lib holds no hero wrappers.
+
+`opts` fields: `me`, `catalog` (the per-caster intercept table, e.g.
+`TD.LINE_PROJECTILE_INTERCEPTS`), `tlog3` (bool, gate level-3 skip logs),
+`enabled()`, `subsystem_on()`, `origin(npc)`, `uname(npc)`,
+`is_enemy_hero(src, me)`, `dedup_responded(src, mod)`, `dedup_mark(src, mod)`,
+`record_save`, `fs_shard_window()`.
+
+| Function | Returns |
+|----------|---------|
+| `dispatcher:HandleLineProjectile(data, opts)` | nothing; fires a displacement save via `Dispatch` when you are within the projectile's `hit_radius + 75` perpendicular floor and heading-toward, after the dedup gate |
+
+## ETA resolvers (lock-TTL math)
+
+The dispatcher's per-threat lock holds for a TTL the cfg supplies via
+`cfg.eta_resolver` (a `canonical_mod -> resolver_fn` map) plus
+`cfg.eta_resolver_default`. A resolver returns seconds-until-resolution for its
+threat. Rather than hand-write these, build them from the `Defense.EtaResolvers`
+factory set: each factory returns a closure matching the resolver signature
+`(caster, target, armed_entry, ability_handle, now_t, canonical_mod)`. All four
+are stateless and engine-only, so no hero state leaks into the closures.
+
+```lua
+local EtaR = Defense.EtaResolvers
+local MY_ETA_RESOLVERS = {
+    modifier_lion_voodoo  = EtaR.Remaining("modifier_lion_voodoo", nil, 0.5),
+    modifier_some_charge  = EtaR.DistSpeed(550, 2.0),
+    modifier_pudge_hook   = EtaR.Line(1600),
+    -- cast-point class entries:
+    modifier_some_nuke    = EtaR.CastPoint(0.5),
+}
+```
+
+- **`CastPoint(cp_default, floor_s)`** - pre-cast / cast-point class. Prefers the
+  armed entry's stamped `cast_point + arm_t` (drift-free), falls back to a live
+  `Ability.GetCastPoint(handle, true)`, then `cp_default`. Clamped to
+  `>= floor_s` (default 0.1).
+- **`Remaining(mod_name, cap_s, floor_s)`** - active-debuff class. Reads
+  `NPC.GetModifierRemaining(target, mod_name)`. `cap_s` clamps the result so a
+  periodic re-fire pattern can re-acquire before the TTL elapses; `floor_s`
+  default 0.1.
+- **`DistSpeed(default_speed, blink_cap)`** - armed-chain / instant-blink class.
+  Returns `dist(caster, target) / speed`, using the armed entry's stamped
+  `eta_speed` when present else `default_speed`. `blink_cap` clamps for blink
+  classes (nil = no cap); floored at 0.05s.
+- **`Line(speed, fog_fallback)`** - line-projectile class. Returns
+  `dist / speed` when both caster and target exist; falls back to the armed
+  entry's `eta_trigger` or `fog_fallback` (default 1.0) when the caster is in
+  fog.
+
+`Defense.MakeGenericEtaResolver(TD, opts)` is the catch-all you wire as
+`cfg.eta_resolver_default`. It returns a closure bound to the supplied `TD` (so
+the lib takes no circular dependency on `threat_data`), reads the canonical mod's
+`THREAT_ARRIVAL_TIMING` entry, and branches by `entry.kind`:
+`channel_at_caster` -> caster-side `GetModifierRemaining`; `cast_point_*` ->
+`cast_point + post_cast_delay`; homing / blink kinds ->
+`dist(caster, target) / speed_fallback`; no catalog entry -> target-side
+`GetModifierRemaining`; nothing usable -> `nil` (the lib then falls back to
+`cfg.fallback_lock_ttl_s`). `opts.lock_cap_s` caps the result (default 1.7s).
+
+| Function | Returns |
+|----------|---------|
+| `Defense.EtaResolvers.CastPoint(cp_default, floor_s)` | resolver: armed cast-point, else live `GetCastPoint`, else `cp_default`; clamped `>= floor_s` (0.1) |
+| `Defense.EtaResolvers.Remaining(mod_name, cap_s, floor_s)` | resolver: `GetModifierRemaining(target, mod_name)`, clamped to `cap_s` / `>= floor_s` (0.1) |
+| `Defense.EtaResolvers.DistSpeed(default_speed, blink_cap)` | resolver: `dist / (armed.eta_speed or default_speed)`, capped by `blink_cap`, floored 0.05 |
+| `Defense.EtaResolvers.Line(speed, fog_fallback)` | resolver: `dist / speed`, or armed `eta_trigger` / `fog_fallback` (1.0) when caster is fogged |
+| `Defense.MakeGenericEtaResolver(TD, opts)` | catalog-aware default resolver bound to `TD`; branches on `THREAT_ARRIVAL_TIMING[mod].kind`, capped by `opts.lock_cap_s` (1.7) |
+
+## Per-save fire window (`Defense.ComputeSaveFireWindow`)
+
+`Defense.ComputeSaveFireWindow(threat_entry, speed, save_entry)` is the public
+helper for the per-save fire-window math: given a catalog entry
+(`THREAT_ARRIVAL_TIMING[mod]`), the effective threat `speed`, and the
+`SAVE_FIRE[name]` entry (which must carry `prep_time`), it returns
+`(lower, upper)` seconds. The chain walker no longer gates on this itself (hero
+`.fire` bodies own their timing), so this is exposed for those `.fire` bodies and
+any hero-side preview that wants one source of truth for the window.
+
+It returns an always-open window `(0, math.huge)` for `channel_at_caster` and
+`cast_point_targeted` kinds (timing handled elsewhere), a geometric upper
+(`prep + catch_radius / speed`) for AoE-catch saves on homing kinds when the save
+declares a `catch_radius` and `speed > 0`, and otherwise a tight
+`(prep, prep + 0.10)` (a singular fire moment with a small frame-slack margin).
+
+| Function | Returns |
+|----------|---------|
+| `Defense.ComputeSaveFireWindow(threat_entry, speed, save_entry)` | `(lower, upper)` fire-window seconds for one save against one catalog threat |
