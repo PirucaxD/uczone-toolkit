@@ -234,6 +234,8 @@ ThreatData.THREAT_PROFILE = {
         note="CONFLICT: Liquipedia 'Pierces Debuff Immunity sources conditionally' vs KV enemies_no. Resolved: the conditional pierce is Aghanim's Scepter only; ..." },
     ["modifier_shadow_shaman_voodoo"] = { school="magical", damage_type="none", pierces_spell_immunity=false, dispellable="strong", delivery="spell", targeted=true, primary_harm="disable", timing="pre_cast", severity="survivable", add_kinds={"dispel_strong"},
         note="CONFLICT: none. KV (dt=none, pierces=false, disp=strong) matches Liquipedia. Mechanically identical to Lion Hex. | Same class as Lion Voodoo: magic..." },
+    ["modifier_techies_suicide_leap"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="basic", delivery="leap", primary_harm="disable", timing="at_impact", lotus_reflectable=false, severity="lethal",
+        note="v0.5.149 Blast Off! (techies_suicide, KV ID 5601). POINT+AOE, magical, spell_immunity enemies_no (=> pierces=false), dispellable yes (basic). cast_point 1.0 then a FIXED 0.75s leap (KV duration 0.75), 400 radius, 200/300/400/500 magical + 0.8-1.4s stun + 20% self hp_cost. The COMBO TRIGGER (Land Mines + Sticky Bomb detonate with the landing) so THREAT_SEVERITY=high (not withheld by low_severity_high_hp). delivery=leap => DeriveCounters keeps invuln (WW/Eul, v0.5.143 leap rule) + displacement (Force/Pike/Blink, out of the 400 AoE) + magic_immune (BKB eats the magical burst + the stun). modseen-confirmed: modifier_techies_suicide_leap is created on Techies in-flight (demo closing 496->239u) => OnModifierCreate arms it by proximity like Slark/Huskar. NOTE: an already-LATCHED Sticky Bomb still rides Force/Pike/WW (log _windwaker variant); BKB/Eul-invuln answer that, but the leap itself is fully dodged here." },
     ["modifier_slark_pounce"] = { school="magical", damage_type="magical", pierces_spell_immunity=false, dispellable="none", delivery="leap", primary_harm="disable", timing="at_impact", lotus_reflectable=false, severity="survivable",
         note="CONFLICT: none (KV damage_type=magical but pounce_damage=0 so primary_harm=disable not damage; spell_immunity=enemies_no => pierces=false matches L..." },
     ["modifier_spirit_breaker_charge_of_darkness"] = { school="magical", damage_type="none", pierces_spell_immunity=false, dispellable="none", delivery="homing_charge", primary_harm="disable", timing="at_impact", severity="lethal",
@@ -713,6 +715,11 @@ ThreatData.THREATS_ON_SELF = {
     modifier_rattletrap_hookshot                    = { role = "gap_close",        save = "pike_or_grenade" },
     modifier_rattletrap_cog_marker                  = { role = "trap",             save = "displace_or_airborne" },  -- v0.5.147.x Power Cogs trap marker (PRIMARY victim landing; demo-confirmed) -- WW/Eul eat time, Force/Pike push out
     modifier_rattletrap_cog_push                    = { role = "trap",             save = "displace_or_airborne" },  -- v0.5.147.x cog contact knockback (sibling; lands if Lina walks into a cog)
+    modifier_techies_land_mine_burn                 = { role = "nuke",             save = "bkb_or_none" },           -- v0.5.149 coverage: mine burst (reactive-only; invisible mines, no pre-empt)
+    modifier_techies_sticky_bomb_slow               = { role = "nuke",             save = "dispel_or_bkb" },         -- v0.5.149 coverage: attached bomb slow + magical nuke
+    modifier_techies_suicide_leap                   = { role = "gap_close",        save = "force_or_pike" },        -- v0.5.149 Blast Off! leap (combo trigger); armed pre-impact via THREAT_ARRIVAL_TIMING -> composed close_gap
+    modifier_techies_mutually_assured_destruction   = { role = "nuke",             save = "bkb_or_none" },          -- v0.5.149 M.A.D. innate magical nuke (1.5s delay); low chip, BKB-only
+    modifier_techies_minefield_sign_scepter_aura    = { role = "trap",             save = "blink_or_bkb" },         -- v0.5.149 Minefield Sign (Aghs aura, 1000r, 300 magical per 200u moved); escape = WW/blink/BKB only (zone outlasts cyclone; 600u Force/Pike cannot clear 1000r)
     modifier_spirit_breaker_nether_strike           = { role = "gap_close",        save = "bkb_or_pike" },
     modifier_huskar_life_break_charge                      = { role = "gap_close",        save = "pike_or_grenade" },
     modifier_sandking_burrowstrike                  = { role = "line_projectile",  save = "perp_displacement" },
@@ -1057,6 +1064,11 @@ ThreatData.ABILITY_TO_THREAT = {
     chaos_knight_reality_rift           = "modifier_chaos_knight_reality_rift",
     rattletrap_hookshot                 = "modifier_rattletrap_hookshot",
     rattletrap_power_cogs               = "modifier_rattletrap_cog_marker", -- v0.5.147.x cast-poll trap save (NO_TARGET); the trap marker that lands on the victim (demo-confirmed; VPK grep missed it)
+    techies_land_mines                  = "modifier_techies_land_mine_burn",   -- v0.5.149 coverage: mine burst (reactive-only; demo-harvest the real victim mod)
+    techies_sticky_bomb                 = "modifier_techies_sticky_bomb_slow",  -- v0.5.149 coverage: attached bomb slow + magical nuke (reactive)
+    techies_suicide                     = "modifier_techies_suicide_leap",       -- v0.5.149 Blast Off! leap (combo trigger); arms via THREAT_ARRIVAL_TIMING
+    techies_mutually_assured_destruction = "modifier_techies_mutually_assured_destruction",  -- v0.5.149 M.A.D. innate nuke (reactive)
+    techies_minefield_sign              = "modifier_techies_minefield_sign_scepter_aura",  -- v0.5.149 Minefield Sign (Aghs Scepter aura)
     huskar_life_break                   = "modifier_huskar_life_break_charge",
     sandking_burrowstrike               = "modifier_sandking_burrowstrike",
     nyx_assassin_impale                 = "modifier_nyx_assassin_impale",
@@ -1399,6 +1411,24 @@ ThreatData.RECOMMENDED_SAVES = {
         "item_force_staff", "item_hurricane_pike", "item_blink",
         "item_cyclone", "item_wind_waker", "item_manta", "item_black_king_bar",
     },
+    modifier_techies_suicide_leap = {
+        -- v0.5.149: Blast Off! leap (fallback chain for non-composing heroes; Lina
+        -- resolves the composed close_gap tier). Airborne first, then BLINK (full exit
+        -- of the 400 AoE -- bumped ahead of displacement per the demo), then Force/Pike,
+        -- then BKB eats the magical burst & stun.
+        "item_wind_waker", "item_cyclone", "item_blink", "item_force_staff",
+        "item_hurricane_pike", "item_black_king_bar",
+    },
+    modifier_techies_minefield_sign_scepter_aura = {
+        -- v0.5.149: Minefield Sign (Aghs aura, 1000 radius, 300 magical per 200u moved).
+        -- ONLY 3 escapes (user-verified). BLINK leads -- the only clean full-clear (1200u
+        -- out of the 1000r field); on CD -> BKB (magic-immune, walk out) then Wind Waker
+        -- LAST (untargetable 2.5s but the 10s minefield OUTLASTS the cyclone -> lands back
+        -- in it, a last resort). NOT Eul (same outlast) and NOT Force/Pike (600u cannot
+        -- clear a 1000r field; forced movement IS movement = damage). No category -> this
+        -- list resolves directly (tier 4).
+        "item_blink", "item_black_king_bar", "item_wind_waker",
+    },
     modifier_mirana_arrow = {
         -- v6.15.261: hero-agnostic.
         "item_hurricane_pike", "item_force_staff", "item_blink",
@@ -1550,10 +1580,12 @@ ThreatData.CATEGORY_CHAINS = {
     close_gap = {
         -- v0.5.136.1 redesign: AIRBORNE-FIRST priority (Order = priority within
         -- category). A gap-closer (leap / charge / blink) is best answered by an
-        -- airborne dodge (untargetable -> the attack/leash whiffs), then invis /
-        -- lock-break vs a physical chaser, then magic-immunity, then a blink
-        -- reposition, then physical answers (ghost/blademail/crimson), and finally
-        -- displacement (pike/force keep-away) as the FALLBACK. This mirrors the
+        -- airborne dodge (untargetable -> the attack/leash whiffs), then a BLINK
+        -- reposition (v0.5.149: bumped ahead of invis/BKB -- a full exit of a leap/
+        -- line/zone AoE, e.g. Techies Blast Off), then invis / lock-break vs a
+        -- physical chaser, then magic-immunity, then physical answers (ghost/
+        -- blademail/crimson), and finally displacement (pike/force keep-away) as the
+        -- FALLBACK. This mirrors the
         -- hand-curated CH.GAP_CLOSE_SAVES priority the composed path replaces, so a
         -- migrated gap-closer fires WW-first, not pike-first (the pre-reorder
         -- displacement-first order would have led with Pike after W skips).
@@ -1561,10 +1593,9 @@ ThreatData.CATEGORY_CHAINS = {
         -- DeriveCounters emits displacement_blink (leaps/lines/homing/non-barrier
         -- zones; charges withhold it -- "re-homes"). item_glimmer_cape (v0.5.134):
         -- in the invis tier so a physical-chase composed chain (PA) keeps Glimmer.
-        "item_wind_waker", "item_cyclone",
+        "item_wind_waker", "item_cyclone", "item_blink",
         "item_glimmer_cape", "item_solar_crest", "item_silver_edge", "item_invis_sword",
         "item_black_king_bar",
-        "item_blink",
         "item_ghost", "item_blade_mail", "item_crimson_guard",
         "item_hurricane_pike", "item_force_staff",
         "item_lotus_orb", "item_manta", "item_phase_boots",
@@ -1883,6 +1914,27 @@ ThreatData.THREAT_ARRIVAL_TIMING = {
         kv_ability      = "kez_grappling_claw",
         kv_speed_key    = "grapple_speed",
         speed_fallback  = 1800,
+        cast_point      = 0,
+        post_cast_delay = 0,
+        impact_pos      = "self",
+    },
+
+    -- v0.5.149: Techies Blast Off! (techies_suicide, KV ID 5601). KV: POINT+AOE,
+    -- magical, spell_immunity enemies_no, cast_point 1.0 then a FIXED 0.75s leap
+    -- (KV duration 0.75; NOT speed-based), 400 radius, 200/300/400/500 + 0.8-1.4s
+    -- stun, 20% self hp_cost. The in-flight modifier_techies_suicide_leap is created
+    -- on Techies at leap-start (modseen, demo closing 496->239u) -> OnModifierCreate
+    -- arms it by proximity like Slark/Huskar. There is NO leap-speed KV (fixed
+    -- duration), so kv_speed_key falls through to speed_fallback, set high to fire the
+    -- instant airborne save EARLY inside the 0.75s window (erring early is safe for
+    -- WW/Eul/Blink). Demo-tune speed_fallback from the fire distance. Resolves the
+    -- composed close_gap chain (WW/Eul/Force/Pike/Blink + BKB).
+    modifier_techies_suicide_leap = {
+        kind            = "leap",
+        speed_source    = "kv_or_fallback",
+        kv_ability      = "techies_suicide",
+        kv_speed_key    = "jump_speed",
+        speed_fallback  = 1500,
         cast_point      = 0,
         post_cast_delay = 0,
         impact_pos      = "self",
@@ -2853,6 +2905,7 @@ ThreatData.THREAT_TIMING = {
     modifier_nyx_assassin_vendetta                  = "at_impact",
     modifier_pudge_meat_hook             = "at_impact",  -- when hook is in flight
     modifier_slark_pounce                = "at_impact",
+    modifier_techies_suicide_leap        = "at_impact",  -- v0.5.149 Blast Off! leap
     modifier_mirana_arrow                = "at_impact",
     modifier_razor_static_link_debuff           = "reactive",
     modifier_lion_mana_drain             = "reactive",
@@ -2992,6 +3045,7 @@ ThreatData.THREAT_CATEGORY = {
     modifier_nyx_assassin_vendetta                  = "close_gap",
     modifier_phantom_assassin_phantom_strike_target = "close_gap",  -- already landed, but the chase profile is gap-close
     modifier_slark_pounce                      = "close_gap",       -- gap-close + leash
+    modifier_techies_suicide_leap              = "close_gap",       -- v0.5.149 Blast Off! leap (combo trigger)
     -- Channel on self
     modifier_pudge_dismember_pull                   = "channel_on_self",
     modifier_bane_fiends_grip                  = "channel_on_self",
@@ -3187,6 +3241,11 @@ ThreatData.THREAT_SEVERITY = {
     modifier_rattletrap_hookshot         = "high",
     modifier_rattletrap_cog_marker       = "medium",  -- v0.5.147.x Power Cogs trap marker (PRIMARY). NOT "low" so the low_severity_high_hp gate never withholds the WW/Eul eat-time saves at full HP.
     modifier_rattletrap_cog_push         = "medium",  -- v0.5.147.x cog contact knockback (sibling); same tier.
+    modifier_techies_land_mine_burn      = "low",     -- v0.5.149: a single mine is chip; "low" so the low_severity_high_hp gate withholds high-CD saves at full HP.
+    modifier_techies_sticky_bomb_slow    = "low",     -- v0.5.149: downranked medium->low; a latched bomb is a setup slow + small nuke (not a kill alone), so low_severity_high_hp withholds WW/Eul/BKB at full HP (was burning WW reactively, and the latched slow rode the cyclone -> log _windwaker).
+    modifier_techies_suicide_leap        = "high",    -- v0.5.149: Blast Off! leap is the COMBO TRIGGER (mines/sticky detonate on landing); high so it is NOT withheld -> the close_gap save fires by proximity pre-impact.
+    modifier_techies_mutually_assured_destruction = "low",  -- v0.5.149: M.A.D. innate nuke chip (1.5s delay).
+    modifier_techies_minefield_sign_scepter_aura  = "medium",  -- v0.5.149: Minefield Sign (Aghs) zone; medium so the escape (WW/blink/BKB) is not withheld at full HP.
     modifier_pudge_meat_hook             = "high",   -- connecting hook = lethal pull (was "low"; aligns with profile severity="lethal" + the cast-poll save). The low_severity_high_hp gate was withholding WW at full HP.
     modifier_spirit_breaker_nether_strike = "high",
     modifier_huskar_life_break_charge           = "high",
@@ -3252,7 +3311,7 @@ ThreatData.THREAT_SEVERITY = {
     modifier_treant_overgrowth           = "high",   -- 5s AoE root
     modifier_disruptor_static_storm_thinker = "medium", -- channel, can walk out
     modifier_shadow_shaman_voodoo        = "medium", -- 3-4s hex
-    modifier_zuus_lightning_bolt         = "medium", -- single-target burst
+    modifier_zuus_lightning_bolt         = "low",    -- v0.5.149: low-priority nuke + ministun; "low" so the low_severity_high_hp gate withholds the high-CD saves (WW/BKB) at full HP (user: not a major skill to advert; only saves when low/lethal)
     modifier_magnataur_skewer            = "medium", -- 2.25s stun + grab
     modifier_sven_storm_bolt             = "low",    -- 1.75s stun
     modifier_earth_spirit_rolling_boulder= "medium", -- line stun, hard to dodge close-range
