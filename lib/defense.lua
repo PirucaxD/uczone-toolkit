@@ -1490,4 +1490,61 @@ function Defense.MakeGenericEtaResolver(TD, opts)
     end
 end
 
+----------------------------------------------------------------------------
+-- Deferred-dodge timing (v0.5.160.3 Note-1 lib-first lift)
+----------------------------------------------------------------------------
+-- General "accept the first strike, then dodge mid-channel" timing for an enemy
+-- multi-strike ult the target negates by going untargetable (cyclone-class: Wind
+-- Waker / Eul) but which REFUNDS if the target is untargetable at cast yet WASTES if
+-- the target vanishes after it commits -- canonically Juggernaut Omnislash (dodging
+-- in the ~0.3s cast point cancels+refunds; dodging mid-ult whiffs the rest of the
+-- strikes -> Jugg loses the ult). Hero-agnostic: any hero with an untargetable dodge
+-- opts in by calling these from its own channel-anim handler + per-frame tick. The
+-- hero owns the trigger, the save chain, and the menu; the lib owns the DECISION +
+-- the defer state machine. Engine globals Entity / NPC run lib-side; the fire is the
+-- hero's dispatch closure (its own chain).
+
+-- Pure decision: defer the untargetable dodge iff NO immediate save (attack-immune
+-- but still TARGETABLE, e.g. Ghost / Ethereal -- these do not cancel the cast) is
+-- ready AND the target has the HP to safely eat the first strike. Below the floor,
+-- dodge at cast to SURVIVE (the caster keeps the ult, the target lives). Offline-tested.
+function Defense.ShouldDeferDodge(immediate_ready, cur_hp, min_hp)
+    return (not immediate_ready) and ((cur_hp or 0) >= (min_hp or 0))
+end
+
+-- Arm a pending deferred dodge (one at a time). cfg = { caster, watch_modifier,
+-- fire_at (absolute time), min_hp }. Call only when ShouldDeferDodge is true.
+function Dispatcher:ArmDodgeDefer(cfg)
+    self._dodge_defer = cfg
+end
+
+-- Per-frame tick. opts = { me, now (number), dispatch(caster, via, hp) }. Fires the
+-- hero's dispatch mid-channel (now >= fire_at) OR early if a strike dropped the
+-- target below min_hp (via="hp_bail"); clears when the channel ends (watch_modifier
+-- left the caster) or the target dies. The hero's dispatch runs its own save chain.
+function Dispatcher:DodgeDeferTick(opts)
+    local d = self._dodge_defer
+    if not d then return end
+    local me = opts and opts.me
+    if not (me and Entity.IsAlive and Entity.IsAlive(me)) then self._dodge_defer = nil; return end
+    local caster = d.caster
+    if not (caster and Entity.IsEntity and Entity.IsEntity(caster)) then self._dodge_defer = nil; return end
+    local now_t   = (opts and opts.now) or 0
+    local cur_hp  = (Entity.GetHealth and Entity.GetHealth(me)) or 0
+    local hp_bail = cur_hp < (d.min_hp or 0)
+    -- WAIT through the caster's cast point: the ult modifier lands at cast-COMPLETE, so
+    -- it is NOT on the caster during the cast point right after arm -- do NOT clear on a
+    -- missing modifier here (that was the v0.5.160.3 "didn't land" bug: the tick cleared
+    -- every frame of the ~0.3s cast point before the ult committed). Hold until fire_at,
+    -- unless a strike already dropped the target to the floor (bail early).
+    if now_t < (d.fire_at or 0) and not hp_bail then return end
+    -- Due (or HP-critical): dodge ONLY if the ult actually committed (watch_modifier
+    -- present = mid-ult). If absent, the cast was cancelled/refunded or already ended ->
+    -- nothing to dodge; clear (the normal reactive save path covers anything else).
+    if NPC.HasModifier and NPC.HasModifier(caster, d.watch_modifier) and opts.dispatch then
+        opts.dispatch(caster, hp_bail and "hp_bail" or "mid_ult", cur_hp)
+    end
+    self._dodge_defer = nil
+end
+
 return Defense
