@@ -575,7 +575,14 @@ function Escape.PostAirborneMoveTick(me, pending, cfg)
     -- brief pre-flip drift is harmless. nil (threat dead / degenerate / on top of
     -- Lina) keeps the prior dest. Only Lina drives this tick (Sniper uses
     -- TrySelfPush), so this does not touch Sniper.
-    if pending.threat_caster and pending.push_dist then
+    -- v0.5.16x Phase B: pluggable recompute. A hero-supplied recompute_dest (FC-escape
+    -- uses SafestSpotNear, terrain-aware) overrides the default ComputeSafeDest
+    -- directional recompute. Back-compat: WW/Eul set neither, so the elseif path is
+    -- unchanged for them.
+    if pending.recompute_dest then
+        local nd = pending.recompute_dest()
+        if nd then pending.dest = nd end
+    elseif pending.threat_caster and pending.push_dist then
         local _, new_dest = Escape.ComputeSafeDest(me, pending.threat_caster, pending.push_dist)
         if new_dest then pending.dest = new_dest end
     end
@@ -1046,18 +1053,26 @@ end
 ---@param me userdata
 ---@param radius number sample circle radius (typical 600-900)
 ---@param opts table|nil same as AdvanceRiskScore opts (engage_radius, max_ms, now)
----@return userdata|nil best_pos
+---@return userdata|nil best_pos best OVERALL spot (may be terrain-locked)
 ---@return number best_score
+---@return table|nil info {traversable, locked, walkable_pos, walkable_score} (v0.5.16x Phase B)
 function Escape.SafestSpotNear(me, radius, opts)
-    if not (me and radius) then return nil, math.huge end
+    if not (me and radius) then return nil, math.huge, nil end
     local me_pos = Entity.GetAbsOrigin(me)
-    if not me_pos then return nil, math.huge end
+    if not me_pos then return nil, math.huge, nil end
     opts = opts or {}
     -- Single snapshot used for all 9 scores (avoid 9x Heroes.GetAll scans).
     local sub_opts = {}
     for k, v in pairs(opts) do sub_opts[k] = v end
     sub_opts.snapshot = sub_opts.snapshot or Escape.FogSnapshot(me, opts)
-    local best_pos, best_score = me_pos, Escape.AdvanceRiskScore(me, me_pos, sub_opts)
+    -- v0.5.16x Phase B (design 6.1): track TWO winners in one scan -- the best
+    -- WALKABLE spot and the best OVERALL spot (incl. terrain-locked samples). The
+    -- 3rd return `info` lets a caller distinguish "the safest spot is across terrain"
+    -- (fly) from "the safest spot is walkable" (just walk). me_pos is always
+    -- traversable so it seeds both. Additive 3rd return: 2-return callers unaffected.
+    local me_score = Escape.AdvanceRiskScore(me, me_pos, sub_opts)
+    local best_pos, best_score, best_locked = me_pos, me_score, false
+    local walk_pos, walk_score = me_pos, me_score
     for deg = 0, 315, 45 do
         local rad = math.rad(deg)
         local p = Vector(me_pos.x + math.cos(rad) * radius,
@@ -1067,14 +1082,16 @@ function Escape.SafestSpotNear(me, radius, opts)
         if GridNav and GridNav.IsTraversableFromTo then
             traversable = GridNav.IsTraversableFromTo(me_pos, p)
         end
-        if traversable then
-            local s = Escape.AdvanceRiskScore(me, p, sub_opts)
-            if s < best_score then
-                best_pos, best_score = p, s
-            end
-        end
+        local s = Escape.AdvanceRiskScore(me, p, sub_opts)
+        if s < best_score then best_pos, best_score, best_locked = p, s, (not traversable) end
+        if traversable and s < walk_score then walk_pos, walk_score = p, s end
     end
-    return best_pos, best_score
+    return best_pos, best_score, {
+        traversable    = not best_locked,
+        locked         = best_locked,
+        walkable_pos   = walk_pos,
+        walkable_score = walk_score,
+    }
 end
 
 ---Offensive Blink-in landing. Pick a point to blink to so `aim_pos` ends up
