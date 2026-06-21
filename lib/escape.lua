@@ -871,6 +871,83 @@ function Escape.ComputeAdvanceDest(me, target, push_dist, opts)
     return landing, score, breakdown
 end
 
+-- v0.5.16x Phase C: pure chase window. Given Lina pos, the target pos + velocity, and gathered
+-- protection circles, return the straight-line catch-ETA and the escape-ETA (min of out-of-kill-reach
+-- and reaching protection). Hero-agnostic, no engine calls (positions/vel passed in) -> offline-tested.
+-- FC grants no speed bonus (Liquipedia): fly_speed = the chaser's base MS; the value is the terrain shortcut.
+--   me_pos, target_pos: {x,y,z}; vel: {x,y} world units/sec; opts = { fly_speed, kill_reach, tower_circles }
+-- Returns { catch_eta, escape_eta, intercept, reason } or nil.
+local function _exit_radius_eta(p, v, c, R)
+    -- earliest t>=0 with |p + v t - c| = R, growing past R. Quadratic |d + v t|^2 = R^2, d = p - c.
+    local dx, dy = p.x - c.x, p.y - c.y
+    local a = v.x * v.x + v.y * v.y
+    if a < 1e-9 then return math.huge end          -- not moving -> never exits
+    local b = 2 * (dx * v.x + dy * v.y)
+    local cc = dx * dx + dy * dy - R * R
+    if cc >= 0 then return 0 end                    -- already outside
+    local disc = b * b - 4 * a * cc
+    if disc < 0 then return math.huge end
+    local t = (-b + math.sqrt(disc)) / (2 * a)      -- larger root = the outward crossing
+    return (t >= 0) and t or math.huge
+end
+local function _enter_radius_eta(p, v, c, R)
+    -- earliest t>=0 with |p + v t - c| <= R (entering). Smaller root.
+    local dx, dy = p.x - c.x, p.y - c.y
+    if dx * dx + dy * dy <= R * R then return 0 end  -- already inside
+    local a = v.x * v.x + v.y * v.y
+    if a < 1e-9 then return math.huge end
+    local b = 2 * (dx * v.x + dy * v.y)
+    local cc = dx * dx + dy * dy - R * R
+    local disc = b * b - 4 * a * cc
+    if disc < 0 then return math.huge end
+    local t = (-b - math.sqrt(disc)) / (2 * a)       -- smaller root = the inward crossing
+    return (t >= 0) and t or math.huge
+end
+function Escape.ChaseWindow(me_pos, target_pos, vel, opts)
+    if not (me_pos and target_pos and vel and opts) then return nil end
+    local fly_speed = opts.fly_speed or 300
+    if fly_speed < 1e-6 then return nil end
+    local dx, dy = target_pos.x - me_pos.x, target_pos.y - me_pos.y
+    local catch_eta = math.sqrt(dx * dx + dy * dy) / fly_speed
+    local escape_eta = _exit_radius_eta(target_pos, vel, me_pos, opts.kill_reach or 1000)
+    if opts.tower_circles then
+        for i = 1, #opts.tower_circles do
+            local tc = opts.tower_circles[i]
+            local e = _enter_radius_eta(target_pos, vel, tc.pos, tc.range)
+            if e < escape_eta then escape_eta = e end
+        end
+    end
+    return { catch_eta = catch_eta, escape_eta = escape_eta, intercept = target_pos, reason = "ok" }
+end
+
+-- v0.5.163 Phase C2: pure cutoff discriminator. Given the chaser pos, the intercept, and the WALK path
+-- (a GridNav.BuildPath result passed in -> engine-free, offline-testable), decide whether the straight FC
+-- flight is a meaningful shortcut over the walk that detours around terrain/trees. The straight flight is
+-- the whole value of FC chase (FC = unobstructed movement at base MS, no speed).
+--   me_pos, intercept: {x,y[,z]}; walk_path: array of {x,y} waypoints (>=2) or nil.
+--   opts = { ratio (default 1.3), min_gain (default 250) }.
+-- Returns { locked, walk, straight, ratio }.
+function Escape.CutoffLock(me_pos, intercept, walk_path, opts)
+    opts = opts or {}
+    local ratio_thresh = opts.ratio or 1.3
+    local min_gain = opts.min_gain or 250
+    if not (me_pos and intercept) then return { locked = false, walk = 0, straight = 0, ratio = 0 } end
+    local sdx, sdy = intercept.x - me_pos.x, intercept.y - me_pos.y
+    local straight = math.sqrt(sdx * sdx + sdy * sdy)
+    if not (walk_path and #walk_path >= 2) then
+        return { locked = false, walk = straight, straight = straight, ratio = 1 }
+    end
+    local walk = 0
+    for i = 1, #walk_path - 1 do
+        local a, b = walk_path[i], walk_path[i + 1]
+        local dx, dy = b.x - a.x, b.y - a.y
+        walk = walk + math.sqrt(dx * dx + dy * dy)
+    end
+    local r = (straight > 1e-6) and (walk / straight) or 1
+    local locked = (walk >= straight * ratio_thresh) and ((walk - straight) >= min_gain)
+    return { locked = locked, walk = walk, straight = straight, ratio = r }
+end
+
 ----------------------------------------------------------------------------
 -- v0.5.77: FOG-AWARE CONSUMERS (gank / rotation / initiator / safest-spot)
 ----------------------------------------------------------------------------
