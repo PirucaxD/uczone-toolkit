@@ -212,6 +212,16 @@ function Geometry.BestAoeCenter(units, radius, lead_s, must_cover)
         for i = 1, #preds do
             local d = anchor:Distance2D(preds[i])
             if d > 1 and d <= 2 * radius then
+                -- MIDPOINT placement (anchor..pred). For d <= 2*radius the midpoint
+                -- sits d/2 <= radius from BOTH, so the anchor stays covered and the
+                -- far unit is INSIDE the radius with margin (d/2). Robust vs the old
+                -- rim placement (off = d - radius put the far unit at exactly `radius`,
+                -- which floating-point could round just outside, collapsing a catchable
+                -- pair to single-target -- a cover-both demo logged d=482 -> covered=1).
+                -- Generated FIRST so it wins coverage ties over the rim candidate,
+                -- which is kept so coverage never regresses for 3+.
+                cand[#cand + 1] = Vector((anchor.x + preds[i].x) * 0.5,
+                                         (anchor.y + preds[i].y) * 0.5, anchor.z)
                 local off = d - radius; if off < 0 then off = 0 end  -- in [0, radius]
                 local f = off / d
                 cand[#cand + 1] = Vector(anchor.x + (preds[i].x - anchor.x) * f,

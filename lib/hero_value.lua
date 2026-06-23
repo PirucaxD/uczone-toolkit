@@ -128,6 +128,27 @@ function HeroValue.of(enemy, peers)
     return HeroValue.base(name) * HeroValue.live_mult(enemy, peers)
 end
 
+-- Cluster value tie-break (FC consumer 3b). Given parallel per-anchor arrays of
+-- member COUNT and summed VALUE, return (best_idx, pure_idx): best = argmax count
+-- with EXACT-count ties broken by higher value (full ties keep the first); pure =
+-- first argmax count (the geometric pick, for the fc_cluster_flip diag). Strictly
+-- more bodies always wins, so value never reduces the W stun-count. Empty -> nil,nil.
+function HeroValue.best_cluster(counts, values)
+    local n = counts and #counts or 0
+    if n == 0 then return nil, nil end
+    local best_i, best_c, best_v = 1, counts[1], values[1] or 0
+    local pure_i, pure_c = 1, counts[1]
+    for i = 2, n do
+        local c = counts[i]
+        if c > pure_c then pure_c, pure_i = c, i end
+        local v = values[i] or 0
+        if c > best_c or (c == best_c and v > best_v) then
+            best_c, best_v, best_i = c, v, i
+        end
+    end
+    return best_i, pure_i
+end
+
 -- diagnostics only: the raw reads behind the live multiplier + alternatives, so
 -- the hero_value_eval log can show what's driving the scale. debug_reads returns
 -- (networth|nil, level|nil); debug_signals returns (max_hp, total_stats,
