@@ -13,7 +13,12 @@ function Schedule.ClearTime(eff_hp, cal)
     cal = cal or {}
     local dmg = cal.march_dmg_per_cast or 1
     if dmg <= 0 then dmg = 1 end
-    local casts = math.max(1, math.ceil((eff_hp or 0) / dmg))
+    -- Round to NEAREST, not up (N5): on a shove the wave is a CLASH, so our own
+    -- creeps + tower clean a sub-half-cast remainder. ceil added a whole wasteful
+    -- March (and ~1 rearm gap of cycle time) for a tiny leftover; round-half-up
+    -- keeps the cast count honest. A genuine remainder the allies cannot finish is
+    -- caught by the live wave-clear early-exit in the engage.
+    local casts = math.max(1, math.floor((eff_hp or 0) / dmg + 0.5))
     local t_clear = casts * ((cal.cast_dur or 0) + (cal.robot_kill or 0))
                   + (casts - 1) * (cal.rearm_channel or 0)
     return { casts = casts, t_clear = t_clear }
