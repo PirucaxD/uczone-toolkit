@@ -105,6 +105,21 @@ on "is their initiator visible"). `SafestSpotNear` grid-searches the eight point
 around the defender plus the centre, scoring each via `AdvanceRiskScore` against
 one shared snapshot, and returns the least dangerous.
 
+`FogProximityRisk` is a continuous `0..1` proximity risk: the max over enemies of
+a distance falloff. A visible enemy (or just-vanished fog at age 0) reduces to the
+plain nearest-enemy falloff `(1 - dist / risk_radius)^2`, so consumers see no
+change for visible foes. A recently-fogged enemy is modeled as a
+growing-but-decaying reachable disc: the disc radius grows with age (`age * fog_ms`,
+how far it could have travelled) while the confidence it contributes decays as it
+spreads (`fog_spread / (fog_spread + radius)`), and its falloff is measured from
+the disc edge rather than the last-known point. Fog enemies older than `age_cap`
+seconds are ignored. It reuses `FogSnapshot`: the first argument is either a
+snapshot to reuse or an entity (in which case it scans internally). The disc radius
+is recomputed here from age and `fog_ms` rather than read from the snapshot's
+`probable_radius`, so `fog_ms` and the snapshot's `max_ms` cannot silently diverge.
+The `opts` are `risk_radius` (default 1400), `fog_ms` (default 550), `fog_spread`
+(default 900), and `age_cap` (default 5), plus the usual `now` / `max_ms`.
+
 ```lua
 local Escape = require("lib.escape")
 
@@ -127,6 +142,7 @@ end
 | `MissingFromMap(me, min_age_s, opts)` | list of `{entity, age, last_pos}` off-map at least `min_age_s` (default 5), longest first |
 | `InitiatorAccountedFor(me, initiator_names, opts)` | `{accounted, missing, visible, unmatched}` for a list of `npc_dota_hero_*` names |
 | `SafestSpotNear(me, radius, opts)` | `(best_pos, best_score)` of the least dangerous of 9 grid samples |
+| `FogProximityRisk(snapshot_or_me, pt, opts)` | continuous `0..1` proximity risk at `pt`, max over enemies of a fog-aware distance falloff |
 
 ## Offensive advance
 
@@ -158,3 +174,48 @@ end
 | `PikeAdvanceLanding(me_pos, target_pos, push_dist)` | landing `push_dist` units toward `target_pos`, `nil` on zero direction |
 | `ComputeAdvanceDest(me, target, push_dist, opts)` | `(landing, score, breakdown)` for a push toward `target` (hero or Vector), `(nil, nil, nil)` if invalid |
 | `BlinkInLanding(me, aim_pos, blink_range, engage_range, opts)` | `(landing, risk_score, reachable)` for a blink that engages `aim_pos` |
+
+## Chase cutoff geometry
+
+Two pure helpers for deciding a straight-line chase / cutoff. Both take plain
+positions, velocities, and option tables (no engine reads), so they are
+offline-testable. They model an unobstructed flight that grants no speed bonus:
+the chaser moves at its own base move speed, and the only value is taking the
+terrain shortcut a walking path cannot.
+
+`ChaseWindow` compares two clocks for the same chase. `catch_eta` is the
+straight-line time to reach the target at `opts.fly_speed` (default 300, the
+chaser's base MS). `escape_eta` is the soonest the target slips away: the time it
+takes the target, moving at `vel`, to exit `opts.kill_reach` (default 1000) of the
+chaser, lowered by the time to enter any protection circle in `opts.tower_circles`
+(each `{ pos, range }`). A `catch_eta` below `escape_eta` means the chase lands
+before the target reaches safety. Positions are `{x, y, z}` tables, `vel` is
+`{x, y}` world units per second. Returns `{ catch_eta, escape_eta, intercept,
+reason }`, or `nil` on missing arguments or a near-zero `fly_speed`.
+
+`CutoffLock` decides whether the straight flight is a meaningful shortcut over the
+walking path that detours around terrain and trees. Given the chaser position, the
+intercept point, and a walk path (an array of `{x, y}` waypoints, typically a
+`GridNav.BuildPath` result), it sums the walk length and compares it to the
+straight-line distance. It locks only when the walk is both at least
+`opts.ratio` times the straight distance (default 1.3) and longer by at least
+`opts.min_gain` absolute units (default 250), so a marginally longer walk does not
+trigger a cutoff. A missing or too-short path is reported unlocked with `ratio = 1`.
+
+```lua
+local Escape = require("lib.escape")
+
+local win = Escape.ChaseWindow(me_pos, target_pos, target_vel,
+                               { fly_speed = base_ms, kill_reach = 1000 })
+if win and win.catch_eta < win.escape_eta then
+    local cut = Escape.CutoffLock(me_pos, win.intercept, walk_path)
+    if cut.locked then
+        -- the straight flight is worth it; the hero acts on the decision
+    end
+end
+```
+
+| Function | Returns |
+|----------|---------|
+| `ChaseWindow(me_pos, target_pos, vel, opts)` | `{ catch_eta, escape_eta, intercept, reason }`, `nil` on missing args or zero `fly_speed` |
+| `CutoffLock(me_pos, intercept, walk_path, opts)` | `{ locked, walk, straight, ratio }`: is the straight flight a worthwhile shortcut over the walk |

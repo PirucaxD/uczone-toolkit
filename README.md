@@ -43,6 +43,16 @@ lock domain so two of your fire paths can't double-save against one
 threat), `item_saves` (hero-agnostic defensive item save bodies: BKB,
 Lotus, Force, Pike, cyclones, blink, and more).
 
+**Farming and lanes** - read the map and plan where to farm:
+`map` (live camp / tower / tree / pathing reads plus nearest-anchor
+helpers), `map_data` (static map positions: camps, towers, outposts,
+fountains), `lane` (lane intel: creep waves, clash / equilibrium
+prediction, intercept ETA, and fogged-lane wave estimates from the spawn
+schedule), `route` (a receding-horizon planner that maximizes
+risk-adjusted gold within a time horizon), `schedule` (a
+timing-anchored shove-cycle controller), `shove` (crash-push cast
+geometry, perpendicular to the creep line).
+
 **Static game data**, generated from Valve's KV files:
 `item_data`, `ability_data`, `unit_data`, `hero_data`, `threat_data`.
 

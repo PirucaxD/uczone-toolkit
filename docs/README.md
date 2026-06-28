@@ -40,6 +40,17 @@ real reference; these pages are the "do I want this lib at all?" overview.
 | [escape](escape.md) | danger-aware positioning: self-displacement saves, fog / gank awareness, pike-advance |
 | [item_saves](item_saves.md) | hero-agnostic defensive item save bodies (BKB, Lotus, Force, Pike, cyclones, blink...) |
 
+**Farming and lanes** - read the map and plan where to farm:
+
+| Lib | What it does |
+|-----|--------------|
+| [map](map.md) | live camp / tower / tree / pathing reads, plus nearest-anchor helpers |
+| [map_data](map_data.md) | static map positions: camps, towers, outposts, fountains |
+| [lane](lane.md) | lane intel: creep waves, clash / equilibrium, intercept ETA, fogged-lane wave estimates |
+| [route](route.md) | receding-horizon farm-route planner: max risk-adjusted gold in a time horizon |
+| [schedule](schedule.md) | timing-anchored shove-cycle controller (clear-time + a clock-independent plan) |
+| [shove](shove.md) | crash-push cast geometry, perpendicular to the creep line |
+
 **Static game data** - generated from Valve's KV files (see `tools/`):
 
 | Lib | What it does |

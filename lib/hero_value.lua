@@ -164,4 +164,43 @@ function HeroValue.debug_signals(u)
     return maxhp, stats, dmg
 end
 
+-- Farm priority on a unified 0..1 scale: how much this hero "owns" farm (pos1 carry highest,
+-- pos5 hard support lowest). Role-FIRST (the ground truth in matches with attributed positions);
+-- hero_value is the FALLBACK when role is nil, normalized onto the same scale. Used by an auto-farm
+-- consumer to gate "stealing": contested = a nearby ally with a HIGHER FarmPriority than ours.
+HeroValue.ROLE_PRIORITY = { [1] = 1.00, [2] = 0.80, [3] = 0.60, [4] = 0.30, [5] = 0.15 }
+HeroValue.VALUE_NORM = 1.6   -- hero_value.of upper bound (base<=1.0 * live clamp HI 1.6); fallback scaler
+
+-- args { role = <1..5|nil>, value = <hero_value number|nil> }. Pure.
+---@return number priority 0..1
+function HeroValue.FarmPriority(args)
+    args = args or {}
+    if args.role and HeroValue.ROLE_PRIORITY[args.role] then
+        return HeroValue.ROLE_PRIORITY[args.role]
+    end
+    local v = (args.value or HeroValue.DEFAULT_VALUE) / HeroValue.VALUE_NORM
+    if v < 0 then return 0 elseif v > 1 then return 1 end
+    return v
+end
+
+-- Player role / position (1 = carry .. 5 = hard support), or nil. VERIFIED 2026-06-26 on the gitbook
+-- (game-components/core/player): UCZone exposes NO clean position/role/assigned-lane API. The Player
+-- class (GetPlayerData / GetTeamData / GetTeamPlayer) has no position field; the ONLY hint is
+-- GetTeamData.lane_selection_flags, a pre-game lane-PREFERENCE bitflag of undocumented encoding, NOT a
+-- reliable assigned position. So this returns nil and consumers fall back to the role-tag point system.
+-- This is the single place to wire a real read if the API appears or the flag encoding is confirmed.
+function HeroValue.role(_hero)
+    return nil
+end
+
+-- Is this hero a CORE (carry / mid / offlane) for farm-ownership decisions? Role-FIRST (positions 1-3)
+-- when HeroValue.role is available; else the role-tag BASE value (patch-stable + fed-ness-independent,
+-- so an under-levelled offlaner still reads as a core) >= core_base (default 0.55: carry/nuker/pusher/
+-- initiator/durable/disabler/escape are >= 0.55, jungler/support/default are below).
+function HeroValue.IsCore(hero, name, core_base)
+    local r = HeroValue.role(hero)
+    if r then return r >= 1 and r <= 3 end
+    return HeroValue.base(name) >= (core_base or 0.55)
+end
+
 return HeroValue

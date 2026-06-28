@@ -219,4 +219,216 @@ function Farm.WorthCasting(hit_count, min_count)
     return (hit_count or 0) >= (min_count or 1)
 end
 
+---Two-camp stand search: ordered candidate stand spots for clearing an ADJACENT
+---camp PAIR with ONE March. Pure scalar math (only Vector(x,y,z) for the returned
+---points), so it is offline-testable; the hero applies walkability + enemy risk to
+---the ordered list and takes the first that passes.
+---
+---March coverage is a rectangle CENTRED on the cast point, oriented along the hero's
+---facing (from the stand toward the cast). Casting at (near) the midpoint of the two
+---camps keeps both within +/- march_len/2 longitudinally. Standing off the A->B axis
+---by a perpendicular `lat` offset finds walkable ground when the on-axis midpoint
+---stand lands on terrain (the river pairs), at the cost of TILTING the rectangle: the
+---farther camp then sits far_long*sin(theta) off the tilted centreline, so candidates
+---whose tilt pushes it past the half-width are dropped (coverage lost).
+---
+---Candidates are emitted for each back distance (along -D toward the stand) x lateral
+---offset, in the given order (least-tilt first within each back), keeping only those
+---that (1) stay within March cast range of the cast point and (2) still cover both
+---camps. Each lateral offset is clamped to the in-cast-range circle (back^2+lat^2 <=
+---(cast_range-range_pad)^2). Returns {} when the pair is too far apart to cover
+---longitudinally (d/2+|pair_offset| > march_len/2) or the inputs are degenerate.
+---@param A table camp-center Vector A (reads .x/.y/.z)
+---@param B table partner camp-center Vector B
+---@param opts table|nil { cast_range?, range_pad?, halfwidth?, march_len?, stand_ring?, pair_offset?, backs?, lats? }
+---@return table candidates ordered { stand=Vector, aim=Vector, back=number, lat=number, tilt=number }
+function Farm.PairStandCandidates(A, B, opts)
+    if not (A and B) then return {} end
+    opts = opts or {}
+    local cast_range = opts.cast_range or 300
+    local range_pad  = opts.range_pad  or 20
+    local halfwidth  = opts.halfwidth  or 450
+    local march_len  = opts.march_len  or 1800
+    local stand_ring = opts.stand_ring or 250
+    local off        = opts.pair_offset or 0
+    local backs      = opts.backs or { stand_ring, 180, 130 }
+    local lats       = opts.lats  or { 0, 110, -110, 220, -220 }
+    local half       = march_len * 0.5
+    local rmax       = cast_range - range_pad
+
+    local dx, dy = B.x - A.x, B.y - A.y
+    local d = math.sqrt(dx * dx + dy * dy)
+    if d < 1 then return {} end                          -- degenerate / coincident
+    local far_long = d * 0.5 + math.abs(off)             -- longitudinal dist of the farther camp from the cast
+    if far_long > half then return {} end                -- cannot cover both even on-axis
+
+    local ux, uy = dx / d, dy / d                        -- D = unit(B-A)
+    local perpx, perpy = -uy, ux                         -- perpendicular to D
+    local castx = (A.x + B.x) * 0.5 + ux * off
+    local casty = (A.y + B.y) * 0.5 + uy * off
+    local z = A.z or 0
+
+    local out = {}
+    for bi = 1, #backs do
+        local back = backs[bi]
+        local maxlat2 = rmax * rmax - back * back         -- in-range circle: back^2 + lat^2 <= rmax^2
+        if maxlat2 > 0 then
+            local maxlat = math.sqrt(maxlat2)
+            for li = 1, #lats do
+                local lat = lats[li]
+                if lat > maxlat then lat = maxlat elseif lat < -maxlat then lat = -maxlat end
+                local hyp = math.sqrt(back * back + lat * lat)
+                local sintheta = (hyp > 0) and (math.abs(lat) / hyp) or 0
+                local tilt = far_long * sintheta          -- far-camp offset from the tilted centreline
+                if tilt <= halfwidth then
+                    out[#out + 1] = {
+                        stand = Vector(castx - ux * back + perpx * lat,
+                                       casty - uy * back + perpy * lat, z),
+                        aim   = Vector(castx, casty, z),
+                        back  = back, lat = lat, tilt = tilt,
+                    }
+                end
+            end
+        end
+    end
+    return out
+end
+
+---Tight-pair clear classification ("best distance" model): given the inter-camp
+---distance `d`, how well does one centred March (cast at ~the midpoint) clear BOTH
+---camps? Models each camp as a creep disc of radius `disc` centred d/2 from the cast.
+---  clean: d/2 + disc <= half  -> the whole far disc is inside +/- march_len/2, one
+---         March clears both.
+---  clip : d/2 - disc <= half  -> the centre spills out but the NEAR creeps still clip
+---         the rectangle; finish with extra Marches + the camp aggro-pulling in.
+---  none : even the nearest creep is outside -> not a viable pair (farm single).
+---Pure; the hero/diagnostic passes march_len + the calibrated disc. Returns the class
+---plus both margins (>=0 = inside) for the calibration readout. (R4 / pairing policy)
+---@param d number|nil inter-camp distance
+---@param opts table|nil { march_len?, disc? }
+---@return table { class = "clean"|"clip"|"none", full_margin = number, clip_margin = number }
+function Farm.PairClearClass(d, opts)
+    opts = opts or {}
+    local half = (opts.march_len or 1800) * 0.5
+    local disc = opts.disc or 200
+    if not d or d <= 0 then
+        return { class = "none", full_margin = -math.huge, clip_margin = -math.huge }
+    end
+    local full_margin = half - (d * 0.5 + disc)   -- outer creep spare; >=0 => clean
+    local clip_margin = half - (d * 0.5 - disc)   -- nearest creep spare; >=0 => at least clips
+    local class = (full_margin >= 0 and "clean") or (clip_margin >= 0 and "clip") or "none"
+    return { class = class, full_margin = full_margin, clip_margin = clip_margin }
+end
+
+-- Tinker farm: valuation / clear-feasibility / scoring / ally-respect helpers.
+-- Hero-agnostic and PURE: the hero precomputes per-creep hp (Entity.GetHealth),
+-- gold (NPC.GetGoldBountyMax), and ally values (lib/hero_value), passing plain
+-- tables/numbers in. No engine calls here. See Tinker/TINKER_FARM_DESIGN.md.
+-- Creep-list contract: { { hp = <number?>, gold = <number?> }, ... }
+
+Farm.DEFAULT_RISK_WEIGHT    = 4.0   -- gold/sec penalty per unit of risk (0..1)
+Farm.DEFAULT_CONTEST_RADIUS = 700   -- an allied core this close "owns" the spot
+local FARM_TIME_EPS = 0.5           -- floor on time-to-acquire (avoid div-by-zero)
+
+---Sum precomputed gold over a creep list. Missing gold counts as 0. (R4 input)
+---@param creeps table|nil
+---@return number
+function Farm.GoldValue(creeps)
+    local g = 0
+    if not creeps then return 0 end
+    for i = 1, #creeps do g = g + (creeps[i].gold or 0) end
+    return g
+end
+
+---Sum hp over a creep list. Missing hp counts as 0. (R3 denominator)
+---@param creeps table|nil
+---@return number
+function Farm.EffectiveHP(creeps)
+    local h = 0
+    if not creeps then return 0 end
+    for i = 1, #creeps do h = h + (creeps[i].hp or 0) end
+    return h
+end
+
+---Can the hero clear these creeps with the given damage budget? The hero
+---computes damage_budget (e.g. March damage-per-cast from lib/ability_data
+---times the planned casts for this camp type). (R3)
+---@param creeps table|nil
+---@param damage_budget number|nil
+---@return boolean
+function Farm.CanClear(creeps, damage_budget)
+    return Farm.EffectiveHP(creeps) <= (damage_budget or 0)
+end
+
+---Value score for one farm candidate; higher is better. The hero supplies an
+---estimated time-to-acquire (travel + clear seconds; Keen TP shrinks travel)
+---and an optional risk in 0..1 from the safety layer. (R4)
+---@param opts table|nil { gold=number, time=number, risk=number?, risk_weight=number? }
+---@return number
+function Farm.ScoreTarget(opts)
+    if not opts then return 0 end
+    local gold = opts.gold or 0
+    local time = opts.time or 0
+    local risk = opts.risk or 0
+    local rw   = opts.risk_weight or Farm.DEFAULT_RISK_WEIGHT
+    if time < FARM_TIME_EPS then time = FARM_TIME_EPS end
+    return gold / time - risk * rw
+end
+
+---Is `pos` contested by an allied core, so the farm bot should not steal it?
+---The hero passes allies with PRECOMPUTED value (from lib/hero_value); this lib
+---never calls hero_value, staying pure. (R2)
+---@param pos table|nil { x, y }
+---@param allies table|nil { { pos = {x,y}, value = number }, ... }
+---@param opts table|nil { radius=number?, min_value=number? }
+---@return boolean
+function Farm.IsContestedByAlly(pos, allies, opts)
+    if not (pos and allies) then return false end
+    local radius = (opts and opts.radius) or Farm.DEFAULT_CONTEST_RADIUS
+    local minval = (opts and opts.min_value) or 0
+    local r2 = radius * radius
+    for i = 1, #allies do
+        local a = allies[i]
+        if a and a.pos and (a.value or 0) >= minval then
+            local dx, dy = a.pos.x - pos.x, a.pos.y - pos.y
+            if (dx * dx + dy * dy) <= r2 then return true end
+        end
+    end
+    return false
+end
+
+---Structural (position-based) farm risk in [0,1]: a gradient that rises toward the enemy fountain
+---(camps deeper on the enemy half are more exposed) PLUS explicit per-zone bumps for known-contested
+---camps the gradient alone cannot separate (e.g. a mid-river ancient at the same axis-distance as a
+---safe own-jungle camp). Pure; the hero passes its fountains + contested-zone tags. Independent of
+---live enemy vision, so it ranks an own-side safelane camp safer than a contested mid camp even when
+---no enemy is on the minimap.
+---@param pos table { x, y }
+---@param opts table|nil { our_fountain={x,y}, enemy_fountain={x,y}, half_weight=number?, zones={ {x,y,radius,bump}, ... }? }
+---@return number risk 0..1
+function Farm.StructuralRisk(pos, opts)
+    opts = opts or {}
+    local r = 0
+    local of, ef = opts.our_fountain, opts.enemy_fountain
+    if of and ef and pos then
+        local ax, ay = ef.x - of.x, ef.y - of.y
+        local denom = ax * ax + ay * ay
+        if denom > 1 then
+            local t = ((pos.x - of.x) * ax + (pos.y - of.y) * ay) / denom   -- 0 our fountain .. 1 enemy fountain
+            if t < 0 then t = 0 elseif t > 1 then t = 1 end
+            r = (opts.half_weight or 0.5) * t
+        end
+    end
+    if pos then
+        for i = 1, #(opts.zones or {}) do
+            local z = opts.zones[i]
+            local dx, dy = pos.x - z.x, pos.y - z.y
+            local rad = z.radius or 0
+            if dx * dx + dy * dy <= rad * rad then r = r + (z.bump or 0) end
+        end
+    end
+    if r < 0 then r = 0 elseif r > 1 then r = 1 end
+    return r
+end
+
 return Farm

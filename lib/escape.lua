@@ -806,6 +806,60 @@ function Escape.AdvanceRiskScore(me, landing, opts)
     }
 end
 
+---v0.x (COR-1): continuous fog-aware proximity risk in [0,1] = the max over
+---enemies of a distance falloff. A recently-fogged enemy is modeled as a
+---growing-but-decaying reachable disc: the disc radius grows with age
+---(reachability) while the risk it contributes decays as it spreads
+---(uncertainty). Visible enemies and just-vanished fog (age 0) reduce to
+---(1 - dist/risk_radius)^2 -- identical to a plain nearest-enemy proximity
+---risk, so consumers see no change for visible foes.
+---
+---@param snapshot_or_me table|userdata a FogSnapshot ({heroes=...}) to reuse,
+---  or an entity (FogSnapshot is then called internally)
+---@param pt userdata position to score (needs :Distance2D)
+---@param opts table|nil {risk_radius=1400, fog_ms=550, fog_spread=900,
+---  age_cap=5, now, max_ms}. fog_ms = disc-growth rate (Liquipedia move cap);
+---  radius is recomputed from age here (NOT the snapshot's probable_radius) so
+---  fog_ms and the snapshot's max_ms cannot silently diverge.
+---@return number risk 0..1
+function Escape.FogProximityRisk(snapshot_or_me, pt, opts)
+    if not pt then return 0 end
+    opts = opts or {}
+    local risk_radius = opts.risk_radius or 1400
+    local fog_ms      = opts.fog_ms or 550
+    local fog_spread  = opts.fog_spread or 900
+    local age_cap     = opts.age_cap or 5
+    local snap
+    if type(snapshot_or_me) == "table" and snapshot_or_me.heroes then
+        snap = snapshot_or_me
+    else
+        snap = Escape.FogSnapshot(snapshot_or_me, opts)
+    end
+    local best = 0
+    for i = 1, #snap.heroes do
+        local h = snap.heroes[i]
+        local edge, conf
+        if h.visible then
+            edge, conf = pt:Distance2D(h.pos), 1
+        elseif h.age <= age_cap then
+            local radius = h.age * fog_ms
+            edge = pt:Distance2D(h.pos) - radius
+            if edge < 0 then edge = 0 end
+            conf = fog_spread / (fog_spread + radius)
+        end
+        if edge then
+            local base = 0
+            if edge < risk_radius then
+                local r = 1 - edge / risk_radius
+                base = r * r
+            end
+            local risk_e = base * conf
+            if risk_e > best then best = risk_e end
+        end
+    end
+    return best
+end
+
 ---Deterministic Pike self-cast landing for an OFFENSIVE advance: Lina
 ---fires Pike facing toward target_pos, lands push_dist units along that
 ---facing. Geometry is the same for any directional self-push item (Force
