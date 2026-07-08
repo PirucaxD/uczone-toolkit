@@ -155,3 +155,21 @@ end
 | `ExpectedWave(game_time, opts)` | `{wave, cycle, melee, ranged, siege, flagbearer, count, hp, gold, strength}` |
 | `BuildLaneStates(creeps, towers, heroes, opts)` | `{top=, mid=, bot=}`, each a per-lane state table |
 | `ScanLanes(opts)` | same as `BuildLaneStates`, read from the live engine |
+
+## What's new in this sync (from the Tinker farm line)
+
+- Lane-path polylines: `Lane.BuildLanePaths`, `Lane.PathLength`,
+  `Lane.PointAtArc`, `Lane.ArcOfPoint`, `Lane.PathTangent` - arc-length
+  geometry along the real (bent) lane paths.
+- Fogged-wave MIRROR: `Lane.MirrorWave` (your visible wave in the role-paired
+  lane, reflected by arc length = the fogged enemy wave's position) +
+  `Lane.ClampBeyondSight` (a fogged front cannot sit inside your creeps'
+  sight - absence of vision is data). Measured error ~300u median.
+- Meeting kinematics: `Lane.MeetingPoint` (closure-aware midpoint) and
+  `Lane.PredictMeeting` (one closing-speed expression for all three lanes).
+- Combat sim: `Lane.SimFight` (per-attacker attrition with focus order),
+  `Lane.WaveCombatants`, `Lane.PushForecast` (who wins the creep fight and
+  when it resolves - a timing input, not a go/no-go gate; 90% sign-match in
+  the validation runs).
+- `Lane.ScanLanes` - the one-call driver: waves, clash, meeting, estimates
+  per lane, with the fog-fill and mirror wired in.

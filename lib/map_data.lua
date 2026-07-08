@@ -75,4 +75,14 @@ MapData.FOUNTAINS = {
   { name="ent_dota_fountain_good", team=2, pos={-7456,-6938,393} },
 }
 
+-- Side-lane creep SPAWNS (in-client captured, v0.1.113-116 wave-mirror instrumentation; hand-added,
+-- not from gen_map_data). Mid spawns were not reliably captured (bot-contaminated sample) - the mid
+-- lane path ends at the T3s, which is equivalent for arc-length mirroring. Piece 1.5.
+MapData.SPAWNS = {
+  { team=2, lane="top", pos={-6608,-4064,256} },
+  { team=2, lane="bot", pos={-3600,-6152,256} },
+  { team=3, lane="top", pos={3173,5761,256} },
+  { team=3, lane="bot", pos={6272,3648,256} },
+}
+
 return MapData

@@ -46,12 +46,19 @@ Lotus, Force, Pike, cyclones, blink, and more).
 **Farming and lanes** - read the map and plan where to farm:
 `map` (live camp / tower / tree / pathing reads plus nearest-anchor
 helpers), `map_data` (static map positions: camps, towers, outposts,
-fountains), `lane` (lane intel: creep waves, clash / equilibrium
-prediction, intercept ETA, and fogged-lane wave estimates from the spawn
-schedule), `route` (a receding-horizon planner that maximizes
-risk-adjusted gold within a time horizon), `schedule` (a
-timing-anchored shove-cycle controller), `shove` (crash-push cast
-geometry, perpendicular to the creep line).
+fountains, lane creep spawns), `lane` (lane intel: creep waves, lane-path
+polylines with an arc-length mirror for fogged waves, clash / equilibrium
+prediction, a creep-fight simulator with a push forecast, intercept ETA,
+and wave estimates from the spawn schedule), `route` (a receding-horizon
+planner that maximizes risk-adjusted gold within a time horizon, with
+return-leg-aware camp selection), `schedule` (a timing-anchored
+shove-cycle controller: clock-independent plan, wave-cadence prediction,
+stack windows, ability-sequence fitting), `nav` (movement composition:
+a predicate-clamped safe destination, a keen/blink/walk transport
+ladder, stuck detection, tree-hide spots), `towers` (a per-tower
+registry: alive flags with a permanent dead latch, plus a measured
+HP-slope death prediction). The `shove` module's cast geometry moved
+into `farm` (`Farm.CrashCast`).
 
 **Static game data**, generated from Valve's KV files:
 `item_data`, `ability_data`, `unit_data`, `hero_data`, `threat_data`.

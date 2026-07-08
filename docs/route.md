@@ -131,3 +131,14 @@ end
 -- or skip straight to the first leg:
 local now_target = Route.Select(targets, hero_state, { now = game_time })
 ```
+
+## What's new in this sync (from the Tinker farm line)
+
+- Return-leg-aware selection: `opts.return_pos` / `return_speed` - a camp
+  is taken only if you can clear it AND be back at the lane meeting by
+  `leave_by` (teleport-aware on the outbound, honest walk on the return).
+- Resource-gated timeline: the plan threads mana/hp through each step, and a
+  fountain refill is a routed NODE (topped to the next step's real cost, not
+  a flat fraction), so refill-then-farm chains are planned, not improvised.
+- The trim and scoring follow risk-adjusted total gold in the horizon; pool
+  candidates carry contested / risk / leg-time gates injected by the hero.

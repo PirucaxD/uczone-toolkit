@@ -2,7 +2,7 @@
 ---lib/map.lua - live map/location layer over the UCZone API v2.0. Hero-agnostic.
 ---
 ---Engine-touching: the public queries are thin wrappers over Camps/Camp/Towers/
----Trees/GridNav/World/NPCs/Entity (see Tinker/TINKER_API_STUDY.md). The pure
+---Trees/GridNav/World/NPCs/Entity. The pure
 ---geometry helpers (_center_of_box / _in_box_xy / _filter_in_box) are split out
 ---and exported so they are offline-testable; the wrappers are verified in-game
 ---via the debug overlay. NOTHING here calls the engine at load time.

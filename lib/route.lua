@@ -3,7 +3,7 @@
 ---budget planner over a unified FarmTarget set. Hero-agnostic + stateless: NO engine calls, no
 ---clock, no background loop. The hero passes plain FarmTarget records + its kinematic state +
 ---weights, gets back the best ordered SEQUENCE, and executes only the first leg (re-planning on its
----own cadence). Mirrors the lib/lane pure-core pattern. See Tinker/TINKER_ROUTE_DESIGN.md.
+---own cadence). Mirrors the lib/lane pure-core pattern. See .
 local Lane = require("lib.lane")    -- InterceptETA for leg chaining (pure scalar; safe offline)
 
 local Route = {}
@@ -47,8 +47,36 @@ function Route._timeline(seq, hero_state, opts)
         if hp   then hp   = math.min(hmax, hp   + hrate * gap) end
         local finish = start + (tg.clear_t or 0)
         if finish > deadline then break end
+        -- round-trip reservation (opts.return_pos): a collected target must leave time to get back to
+        -- return_pos by the deadline, else it is dropped (a far target a one-step ETA made look cheap to
+        -- reach but expensive to leave). The return cost is KEEN-AWARE when opts.return_anchors is given
+        -- (Lane.InterceptETA = cheapest of a plain walk or a ready teleport anchor), so a camp near a keen
+        -- anchor is NOT over-excluded (the v0.1.93 pure-walk-back over-exclusion); this is consistent with
+        -- how the outbound leg is estimated. Straight-line return_speed path kept for anchor-free callers.
+        -- Gated on return_pos so other callers are unaffected. Pure (InterceptETA is scalar).
+        if opts.return_pos and not tg.restore then
+            local ret
+            if opts.return_anchors then
+                ret = Lane.InterceptETA(tg.pos, opts.return_anchors, opts.return_speed,
+                                        opts.return_tp, opts.return_pos).eta
+            elseif opts.return_speed and opts.return_speed > 0 then
+                local dx = (tg.pos.x or 0) - opts.return_pos.x
+                local dy = (tg.pos.y or 0) - opts.return_pos.y
+                ret = math.sqrt(dx * dx + dy * dy) / opts.return_speed
+            end
+            if ret and finish + ret > deadline then break end
+        end
         if tg.restore then                                -- refill node: top up, spend the wait, no value
-            if mana then mana = mmax * frac end
+            if mana then
+                -- COST-AWARE refill (ancient arc, 2026-07-04): top up at least enough for the NEXT
+                -- target (mana_cost + reserve), capped at max. The plain frac top-up (0.70 tempo
+                -- leave) blocked big-ticket camps (an ancient clear ~1200+) exactly at the levels
+                -- where the full pool first affords them - the refill node could never ENABLE what
+                -- it was inserted for.
+                local nxt = seq[i + 1]
+                local need = (nxt and not nxt.restore) and ((nxt.mana_cost or 0) + rsv) or 0
+                mana = math.min(mmax, math.max(mmax * frac, need))
+            end
             if hp   then hp   = hmax * frac end
             collected[#collected + 1] = tg
             clock, pos = finish, tg.pos
@@ -80,12 +108,33 @@ end
 
 ---risk-adjusted objective of a FIXED sequence: sum(value) - risk_weight*sum(risk) over the COLLECTED
 ---targets, plus the totals for tie-breaking. Pure.
+-- #4: this is MAX risk-adjusted gold WITHIN the horizon, NOT gold/time. That is the correct GPM
+-- objective here: each ~30s window is filled with the most gold, ties break on less time, and since
+-- only leg-1 executes and the plan re-runs every leg, a near efficient set is never permanently lost
+-- to a far high-value one (the far camp's leg shrinks as the hero closes; max_leg_s bounds the reach).
+-- Deliberately not a gold/time rate: that would need a fragile time-weight knob for no measured gain.
 ---@return table { score = number, gold = number, time = number, collected = table }
+---opts.step_decay (0..1, default 1 = off): positional discount on later steps' value in the
+---SCORE only (gold stays the true sum). Receding-horizon execution runs only leg 1 and replans;
+---later steps execute with probability < 1 (resource drift, new waves, cost-model error), so a
+---plan that banks its big value FIRST beats one that promises it later at equal totals. With
+---decay d, [small, big] scores small + d*big while [big now] scores big - the front-loaded
+---plan wins whenever the promise is thinner than the bank.
 function Route._score(seq, hero_state, opts)
     local tl = Route._timeline(seq, hero_state, opts)
     local rw, pen = opts.risk_weight or 0, 0
     for i = 1, #tl.collected do pen = pen + rw * (tl.collected[i].risk or 0) end
-    return { score = tl.gold - pen, gold = tl.gold, time = tl.time, collected = tl.collected }
+    local g = tl.gold
+    local dec = opts.step_decay
+    if dec and dec < 1 then
+        g = 0
+        local w = 1
+        for i = 1, #tl.collected do
+            g = g + w * (tl.collected[i].value or 0)
+            w = w * dec
+        end
+    end
+    return { score = g - pen, gold = tl.gold, time = tl.time, collected = tl.collected }
 end
 
 ---the planner: the best ordered sequence (length <= opts.max_steps) maximizing risk-adjusted gold
@@ -102,11 +151,15 @@ function Route.Plan(targets, hero_state, opts)
     local max_steps = opts.max_steps or 4
     local pool_cap  = opts.pool_cap  or 10
 
-    -- 1. eligibility filter (drop contested + hard-risk-vetoed)
+    -- 1. eligibility filter (drop contested + hard-risk-vetoed + UNREACHABLE). opts.max_leg_s: drop a target
+    --    whose reach ETA from the hero (walk or ready teleport, via _leg_time) exceeds it, so the planner
+    --    never commits to a camp Tinker cannot get to before the move watchdog fires (the far-camp stuck).
+    --    Refill nodes are never distance-filtered. (Keen L2 creep-reach will relax this later.)
     local pool = {}
     for i = 1, #(targets or {}) do
         local tg = targets[i]
-        if tg and tg.pos and not tg.contested and (tg.risk or 0) < risk_hard then
+        if tg and tg.pos and not tg.contested and (tg.risk or 0) < risk_hard
+           and (tg.restore or not opts.max_leg_s or Route._leg_time(hero_state.pos, tg, hero_state) <= opts.max_leg_s) then
             pool[#pool + 1] = tg
         end
     end
@@ -118,11 +171,16 @@ function Route.Plan(targets, hero_state, opts)
         for i = 1, #pool do
             if pool[i].restore then restores[#restores + 1] = pool[i] else normals[#normals + 1] = pool[i] end
         end
+        -- #3: rank by the SAME risk-adjusted value the DFS objective uses (was value-only), so a close
+        -- RISKY camp no longer crowds a safer camp out of the pool before the planner ever weighs it.
+        -- Distance still discounts via the rate; the far-high-value-camp case is handled by pool_cap
+        -- (raise it, hero side) + receding re-planning (a far camp's leg shrinks as the hero closes).
+        local rw = opts.risk_weight or 0
         local scored = {}
         for i = 1, #normals do
             local tg = normals[i]
             local t  = Route._leg_time(hero_state.pos, tg, hero_state) + (tg.clear_t or 0)
-            scored[i] = { tg = tg, s1 = (tg.value or 0) / math.max(0.5, t) }
+            scored[i] = { tg = tg, s1 = ((tg.value or 0) - rw * (tg.risk or 0)) / math.max(0.5, t) }
         end
         table.sort(scored, function(a, b) return a.s1 > b.s1 end)
         pool = {}

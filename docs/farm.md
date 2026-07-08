@@ -237,3 +237,21 @@ spot that passes.
 |----------|---------|
 | `PairClearClass(d, opts)` | `{ class = "clean"|"clip"|"none", full_margin, clip_margin }`; `opts` = `{ march_len? (default 1800), disc? (default 200) }` |
 | `PairStandCandidates(A, B, opts)` | ordered `{ {stand, aim, back, lat, tilt}, ... }`; `{}` when uncoverable/degenerate; `opts` keys above |
+
+## What's new in this sync (from the Tinker farm line)
+
+The `shove` module's crash-push cast geometry moved in here, alongside the
+whole decision-support surface the farm brain grew:
+
+- `Farm.CrashCast(wave, opts)` - the crash-push stand + aim (replaces `shove`).
+- `Farm.MarchCovers` / `Farm.OutsideTowerRange` - farmability predicates.
+- `Farm.GreedyPairs` - mutual-nearest camp pairing (stable, no flicker).
+- `Farm.ClearBudget` - stack-aware cast budget from live effective HP.
+- `Farm.CampCombatants` / `Farm.ClearTimeDPS` - per-camp fight math from
+  neutral stat tables (Liquipedia-verified).
+- `Farm.StackWindow` - the timed stack pull window for a camp.
+- `Farm.DepthPoints` - graded depth-risk points past the enemy T1 line
+  (Keen-ready shaves points); pairs with `Farm.PathRisk` (corridor risk
+  sampling hero->stand).
+- `Farm.WaveAimCenter`, `Farm.DeepFarmFactor`, `Farm.DepthLineRisk` - wave
+  aim and depth economics helpers.

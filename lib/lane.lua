@@ -2,7 +2,7 @@
 ---lib/lane.lua - lane intelligence (creep waves, equilibrium, intercept). Hero-agnostic.
 ---Pure analysis core (offline-tested) + thin engine wrappers (verified in-game), mirroring
 ---lib/map.lua. Pure functions use scalar math (read .x/.y, build {x,y}); only the wrappers
----touch the engine, and NOTHING calls the engine at load time. See Tinker/TINKER_LANE_DESIGN.md.
+---touch the engine, and NOTHING calls the engine at load time. See .
 local Lane = {}
 
 -- ---- pure helpers --------------------------------------------------------
@@ -91,6 +91,154 @@ function Lane._assign_lane(point, opts)
     else return "mid" end
 end
 
+-- ---- lane polylines + arc-length mirror (Piece 1.5, ) ------------
+-- Fair-game symmetry (user model): both sides' role-paired waves share spawn cadence, travel
+-- distance, and speed. So fogged enemy waves are never MODELED - they are our own always-visible
+-- waves MIRRORED by arc length along the lane polylines. Visible lanes are read directly.
+
+---total arc length of a polyline { {x,y}, ... }. Pure.
+function Lane.PathLength(path)
+    local len = 0
+    for i = 2, #(path or {}) do
+        local dx, dy = path[i].x - path[i - 1].x, path[i].y - path[i - 1].y
+        len = len + math.sqrt(dx * dx + dy * dy)
+    end
+    return len
+end
+
+---point at arc-distance `s` from the START of the polyline, clamped to [0, length]. Pure.
+function Lane.PointAtArc(path, s)
+    if not path or #path == 0 then return nil end
+    if s <= 0 then return { x = path[1].x, y = path[1].y } end
+    for i = 2, #path do
+        local dx, dy = path[i].x - path[i - 1].x, path[i].y - path[i - 1].y
+        local seg = math.sqrt(dx * dx + dy * dy)
+        if s <= seg and seg > 0 then
+            local t = s / seg
+            return { x = path[i - 1].x + dx * t, y = path[i - 1].y + dy * t }
+        end
+        s = s - seg
+    end
+    return { x = path[#path].x, y = path[#path].y }
+end
+
+---arc-distance from the polyline START to the projection of `p` onto its nearest segment. Pure.
+function Lane.ArcOfPoint(path, p)
+    local best, bestArc, acc = math.huge, 0, 0
+    for i = 2, #(path or {}) do
+        local ax, ay = path[i - 1].x, path[i - 1].y
+        local dx, dy = path[i].x - ax, path[i].y - ay
+        local seg2 = dx * dx + dy * dy
+        local t = 0
+        if seg2 > 0 then t = math.max(0, math.min(1, ((p.x - ax) * dx + (p.y - ay) * dy) / seg2)) end
+        local qx, qy = ax + dx * t, ay + dy * t
+        local d2 = (p.x - qx) ^ 2 + (p.y - qy) ^ 2
+        local seg = math.sqrt(seg2)
+        if d2 < best then best, bestArc = d2, acc + seg * t end
+        acc = acc + seg
+    end
+    return bestArc
+end
+
+---unit tangent of the polyline at the segment nearest to `p` (the CREEP LINE direction at a lane
+---point: the real crash-cast axis, where the fountain axis is only an approximation). Direction
+---sign follows path order (team-2 end -> team-3 end); callers that only need the axis (e.g. a
+---perpendicular) can ignore the sign. nil for a degenerate path. Pure.
+---@return table|nil { x, y }
+function Lane.PathTangent(path, p)
+    if not (path and #path >= 2 and p) then return nil end
+    local best, bi = math.huge, nil
+    for i = 2, #path do
+        local ax, ay = path[i - 1].x, path[i - 1].y
+        local dx, dy = path[i].x - ax, path[i].y - ay
+        local seg2 = dx * dx + dy * dy
+        local t = 0
+        if seg2 > 0 then t = math.max(0, math.min(1, ((p.x - ax) * dx + (p.y - ay) * dy) / seg2)) end
+        local qx, qy = ax + dx * t, ay + dy * t
+        local d2 = (p.x - qx) ^ 2 + (p.y - qy) ^ 2
+        if seg2 > 0 and d2 < best then best, bi = d2, i end
+    end
+    if not bi then return nil end
+    local dx, dy = path[bi].x - path[bi - 1].x, path[bi].y - path[bi - 1].y
+    local l = math.sqrt(dx * dx + dy * dy)
+    return { x = dx / l, y = dy / l }
+end
+
+---lane axis polylines from the STATIC towers (+ captured side-lane creep spawns): one path per
+---lane, ordered from the team-2 (Radiant) end to the team-3 (Dire) end. Waypoints = [spawn,] T3,
+---T2, T1, enemy T1, T2, T3 [, spawn]; forts/T4s excluded (base, off-lane). Accepts pos as {x,y}
+---or a {x,y,z} array (map_data). mid_band defaults 2000 here (not _assign_lane's 2500: the corner
+---T3s - good bot (-3952,-6112) d=2160, bad top (3552,5776) d=-2224 - fall inside the 2500 band and
+---would misassign to mid). Pure.
+function Lane.BuildLanePaths(towers, spawns, opts)
+    local band = { mid_band = (opts and opts.mid_band) or 2000 }
+    local function xy(p) return { x = p.x or p[1], y = p.y or p[2] } end
+    local paths   = { top = {}, mid = {}, bot = {} }
+    local buckets = { top = {}, mid = {}, bot = {} }
+    for _, t in ipairs(towers or {}) do
+        local tier = t.name and tonumber(t.name:match("tower(%d)"))
+        if tier and tier <= 3 and t.pos then
+            local p = xy(t.pos)
+            local ln = Lane._assign_lane(p, band)
+            buckets[ln][#buckets[ln] + 1] = { p = p, tier = tier, team = t.team }
+        end
+    end
+    for ln, list in pairs(buckets) do
+        table.sort(list, function(a, b)
+            if a.team ~= b.team then return a.team < b.team end   -- team-2 side first
+            if a.team == 2 then return a.tier > b.tier end        -- T3 -> T1 toward the river
+            return a.tier < b.tier                                -- then T1 -> T3 to the Dire end
+        end)
+        for _, e in ipairs(list) do paths[ln][#paths[ln] + 1] = e.p end
+    end
+    for _, s in ipairs(spawns or {}) do                           -- creep spawns cap the lane ends
+        if s.lane and paths[s.lane] then
+            if s.team == 2 then table.insert(paths[s.lane], 1, xy(s.pos))
+            else paths[s.lane][#paths[s.lane] + 1] = xy(s.pos) end
+        end
+    end
+    return paths
+end
+
+---fogged-wave estimate by ARC-LENGTH MIRROR: our role-paired wave at arc-distance `s` from OUR end
+---of its lane => the fogged enemy wave at `s` from THEIR end of its lane. Speed is READ from our
+---wave's creeps (role symmetry guarantees theirs matches), never modeled. Paths are ordered
+---team-2 end -> team-3 end; `team` picks which end is ours. Pure.
+---@return table|nil { front, centroid, speed }  (nil without a usable our-side front)
+function Lane.MirrorWave(our_wave, our_path, enemy_path, team)
+    if not (our_wave and our_wave.front and our_path and enemy_path) then return nil end
+    local olen, elen = Lane.PathLength(our_path), Lane.PathLength(enemy_path)
+    local function mirror(p)
+        if not p then return nil end
+        local s = Lane.ArcOfPoint(our_path, p)                        -- arc from the team-2 end
+        if team == 3 then s = olen - s end                            -- Dire's own end is the path END
+        return Lane.PointAtArc(enemy_path, team == 2 and (elen - s) or s)   -- `s` from THEIR end
+    end
+    local speed
+    for _, cc in ipairs(our_wave.creeps or {}) do
+        if cc.speed and (not speed or cc.speed > speed) then speed = cc.speed end
+    end
+    return { front = mirror(our_wave.front), centroid = mirror(our_wave.centroid), speed = speed }
+end
+
+---Piece 1 measured finding (mirror position error 1407u median): the raw mirror can place a fogged
+---front where our own creeps would SEE it - impossible. Absence of vision is data: a fogged enemy
+---front must be at least `vis` beyond OUR same-lane front along the lane (arc space). Returns the
+---(possibly moved) point; est/our front missing -> unchanged. Pure.
+function Lane.ClampBeyondSight(est_front, our_front, path, team, vis)
+    if not (est_front and our_front and path) then return est_front end
+    vis = vis or 800
+    local len = Lane.PathLength(path)
+    local function from_our_end(p)
+        local a = Lane.ArcOfPoint(path, p)
+        return (team == 3) and (len - a) or a
+    end
+    local ae, ao = from_our_end(est_front), from_our_end(our_front)
+    if ae >= ao + vis then return est_front end
+    local a = math.min(len, ao + vis)
+    return Lane.PointAtArc(path, (team == 3) and (len - a) or a)
+end
+
 ---build wave structs from a creep list (one team's creeps) given the team's push direction
 ---(toward the enemy base). Clusters, assigns lanes, computes count/hp/gold/strength + front,
 ---retains the member list. Pure.
@@ -108,6 +256,53 @@ function Lane.DetectWaves(creeps, push_dir, opts)
         }
     end
     return waves
+end
+
+---the point where the two engaged waves MEET. Both sides spawn at the same place and move at the
+---same speed, so the fronts close SYMMETRICALLY -> the meeting is the MIDPOINT of the two fronts
+---(speed cancels). A fogged enemy wave (an ExpectedWave estimate, no front) is assumed to hold the
+---lane centre, so the meeting is between our front and `mid_point`. With neither front -> the lane
+---centre. This replaces aiming at the biggest-cluster centroid (which chased the freshly-spawned
+---wave back near a tower). Pure.
+function Lane.MeetingPoint(ally_wave, enemy_wave, mid_point, push_dir)
+    local of = ally_wave and ally_wave.front
+    local ef = enemy_wave and enemy_wave.front          -- a fogged estimate has no front
+    if of and ef then
+        -- BUG 3: a real meeting needs the two fronts to be CLOSING. The enemy front must still be ahead
+        -- of ours along OUR push (toward the enemy). If our front has already PASSED the enemy front (our
+        -- wave overran, or a fresh enemy wave is far back), the midpoint of those fronts is NOT where they
+        -- collide - it lands deep in enemy territory and spuriously trips the depth gate. Fall back to the
+        -- lane centre there. push_dir nil -> skip the check (back-compat with the old midpoint behavior).
+        if push_dir and mid_point then
+            local closing = (ef.x - of.x) * push_dir.x + (ef.y - of.y) * push_dir.y
+            if closing <= 0 then return { x = mid_point.x, y = mid_point.y } end
+        end
+        return { x = (of.x + ef.x) * 0.5, y = (of.y + ef.y) * 0.5 }
+    end
+    if of and mid_point then return { x = (of.x + mid_point.x) * 0.5, y = (of.y + mid_point.y) * 0.5 } end
+    if ef and mid_point then return { x = (ef.x + mid_point.x) * 0.5, y = (ef.y + mid_point.y) * 0.5 } end
+    return mid_point or of or ef
+end
+
+---kinematic meeting of two waves closing along the line between them. a / b = { pos = {x,y}, speed }.
+---They move toward each other; the gap closes at a.speed + b.speed, so they meet after gap/(va+vb)
+---seconds at the point a has covered va/(va+vb) of the gap. ONE expression for all three lanes:
+---  - mid: equal spawn distance + equal speed -> va/(va+vb) = 0.5 -> the midpoint (the T1 midpoint
+---    when fed the spawns), meeting ETA = gap/650.
+---  - side lanes: unequal spawn distance and/or the first-15-wave +30%/-35% speed split -> the
+---    fraction is not 0.5, so the meeting is off-centre, toward the faster/closer side. Correct by
+---    construction, same formula.
+---Feed CURRENT positions for visible waves; spawn + speed*elapsed for fogged ones. Pure.
+---@return table|nil { point = {x,y}, eta }  (nil if the two are not closing)
+function Lane.PredictMeeting(a, b)
+    if not (a and b and a.pos and b.pos) then return nil end
+    local va, vb = a.speed or 325, b.speed or 325
+    local close = va + vb
+    if close <= 0 then return nil end
+    local dx, dy = b.pos.x - a.pos.x, b.pos.y - a.pos.y
+    local gap = math.sqrt(dx * dx + dy * dy)
+    local f = va / close                                  -- fraction of the gap covered by a
+    return { point = { x = a.pos.x + dx * f, y = a.pos.y + dy * f }, eta = gap / close }
 end
 
 -- ---- clash equilibrium + intercept ---------------------------------------
@@ -236,14 +431,21 @@ function Lane.BuildLaneStates(creeps, towers, heroes, opts)
     local enemy_waves = Lane.DetectWaves(theirs, enemy_push, opts)
     local ally_waves  = Lane.DetectWaves(mine, ally_push, opts)
 
-    local function biggest_by_lane(waves)
-        local by = {}
+    -- the ENGAGED wave per lane = the cluster whose front is FURTHEST ADVANCED along the team's push
+    -- direction (nearest the lane equilibrium), NOT the biggest cluster. The biggest is usually the
+    -- freshly-spawned wave back near a tower, so aiming at it sent the shove to a base (notes 1/2/3).
+    local function engaged_by_lane(waves, push)
+        local by, bestp = {}, {}
         for _, w in ipairs(waves) do
-            if not by[w.lane] or w.count > by[w.lane].count then by[w.lane] = w end
+            local f = w.front
+            if f then
+                local proj = f.x * push.x + f.y * push.y
+                if by[w.lane] == nil or proj > bestp[w.lane] then by[w.lane] = w; bestp[w.lane] = proj end
+            end
         end
         return by
     end
-    local eByLane, aByLane = biggest_by_lane(enemy_waves), biggest_by_lane(ally_waves)
+    local eByLane, aByLane = engaged_by_lane(enemy_waves, enemy_push), engaged_by_lane(ally_waves, ally_push)
 
     local towers_by_lane = { top = {}, mid = {}, bot = {} }
     for _, t in ipairs(towers or {}) do
@@ -255,11 +457,31 @@ function Lane.BuildLaneStates(creeps, towers, heroes, opts)
     for _, lane in ipairs({ "top", "mid", "bot" }) do
         local ew, aw = eByLane[lane], aByLane[lane]
         local clash = (ew or aw) and Lane.PredictClash(ew, aw, towers, opts) or nil  -- clash from VISIBLE positions only
-        if not ew and opts.game_time then            -- fog-fill: estimate the unseen enemy wave by game time
+        if not ew and opts.game_time then            -- fog-fill: estimate the unseen enemy wave (fogged ONLY)
             local est = Lane.ExpectedWave(opts.game_time, { super = opts.super, mega = opts.mega })
             est.lane, est.estimated = lane, true
             est.team = (opts.team == 2) and 3 or 2
-            ew = est                                 -- composition/gold only (no position); clash stays visible-only
+            -- Piece 1.5 MIRROR: the fogged enemy's role-paired wave = OUR wave in the paired lane
+            -- (their safe walks the lane our off walks: top<->bot, mid<->mid; same spawn cadence,
+            -- travel, and speed modifier by fair-game symmetry). Position + speed come from the
+            -- arc-length mirror of our always-visible wave; composition/hp/gold stay the clock
+            -- model. No paired wave visible -> clock-only (composition, no position), as before.
+            local PAIR = { top = "bot", mid = "mid", bot = "top" }
+            local ow = opts.paths and aByLane[PAIR[lane]]
+            local m = ow and Lane.MirrorWave(ow, opts.paths[PAIR[lane]], opts.paths[lane], team)
+            if m and m.front then
+                -- vision-edge floor (Piece 1 measured): our SAME-lane wave bounds the estimate -
+                -- a fogged front cannot sit where our creeps would see it.
+                local same = aByLane[lane]
+                if same and same.front then
+                    m.front    = Lane.ClampBeyondSight(m.front, same.front, opts.paths[lane], team, opts.creep_vision)
+                    m.centroid = m.centroid and Lane.ClampBeyondSight(m.centroid, same.front, opts.paths[lane], team, opts.creep_vision)
+                end
+                est.front, est.centroid, est.speed, est.est_src = m.front, m.centroid, m.speed, "mirror"
+            else
+                est.est_src = "clock"
+            end
+            ew = est                                 -- a mirrored estimate HAS a front -> MeetingPoint works fogged
         end
 
         local en, an = 0, 0
@@ -284,10 +506,28 @@ function Lane.BuildLaneStates(creeps, towers, heroes, opts)
             intercept = Lane.InterceptETA(opts.hero_pos, anchors, opts.move_speed, opts.tp, clash.settle, clearable_until)
         end
 
+        -- lane centre = midpoint of each side's FRONT (most-advanced) tower in this lane = a stable
+        -- geometric anchor (no tower names) used as the meeting fallback when a side is fogged.
+        local own_t1, enemy_t1, op, ep
+        for _, t in ipairs(towers_by_lane[lane]) do
+            if t.pos then
+                if t.team == team then
+                    local pr = t.pos.x * ally_push.x + t.pos.y * ally_push.y
+                    if not own_t1 or pr > op then own_t1, op = t.pos, pr end
+                else
+                    local pr = t.pos.x * enemy_push.x + t.pos.y * enemy_push.y
+                    if not enemy_t1 or pr > ep then enemy_t1, ep = t.pos, pr end
+                end
+            end
+        end
+        local mid_point = (own_t1 and enemy_t1)
+            and { x = (own_t1.x + enemy_t1.x) * 0.5, y = (own_t1.y + enemy_t1.y) * 0.5 } or nil
+
         lanes[lane] = {
             lane = lane, enemy_wave = ew, ally_wave = aw,
             gold = (ew and ew.gold) or 0, towers = towers_by_lane[lane],
             enemy_heroes = en, ally_heroes = an, clash = clash, intercept = intercept,
+            meeting = Lane.MeetingPoint(aw, ew, mid_point, ally_push),   -- where the two engaged waves collide (the shove aim); ally_push gates closure (BUG 3)
         }
     end
     return lanes
@@ -295,7 +535,7 @@ end
 
 -- ---- expected wave by game time (Liquipedia-validated parametrization) ----
 -- Composition + per-cycle scaling for fog estimates + gold valuation. game_time in seconds on the
--- GAME CLOCK (0 = the first wave at 00:00). See Tinker/TINKER_LANE_DESIGN.md + Liquipedia Lane_Creeps.
+-- GAME CLOCK (0 = the first wave at 00:00). See  + Liquipedia Lane_Creeps.
 
 -- base melee/ranged by time threshold (ascending); siege/flagbearer handled by wave cadence below.
 local WAVE_COMP = {
@@ -304,14 +544,16 @@ local WAVE_COMP = {
 -- per-creep { hp, gold, hpc = hp/cycle, goldc = gold/cycle } at cycle 0 (cycle = floor(t/450), max 30).
 -- gold = the MAX bounty of the range, to match the visible path (sums NPC.GetGoldBountyMax) + the
 -- camp-farm convention, so fogged-vs-visible lane gold is apples-to-apples.
+-- COMBAT fields (Piece 1.5 push model, Liquipedia Lane_Creeps-verified 2026-07-01): dmg = avg attack
+-- damage, dmgc = +dmg per 7:30 upgrade cycle, atk = BAT seconds, armor, atype = attack type.
 local CREEP_STATS = {
-    melee   = { hp = 550,  gold = 39, hpc = 12, goldc = 1 },
-    ranged  = { hp = 300,  gold = 52, hpc = 12, goldc = 3 },
-    siege   = { hp = 935,  gold = 72, hpc = 0,  goldc = 0 },   -- siege does not upgrade per-cycle
-    smelee  = { hp = 700,  gold = 26, hpc = 19, goldc = 1.5 }, -- super (post-barracks)
-    sranged = { hp = 475,  gold = 25, hpc = 18, goldc = 6 },
-    mmelee  = { hp = 1270, gold = 26, hpc = 0,  goldc = 0 },   -- mega (base-only; end-game)
-    mranged = { hp = 1015, gold = 25, hpc = 0,  goldc = 0 },
+    melee   = { hp = 550,  gold = 39, hpc = 12, goldc = 1,   dmg = 21,    dmgc = 1, atk = 1, armor = 2, atype = "basic" },
+    ranged  = { hp = 300,  gold = 52, hpc = 12, goldc = 3,   dmg = 23.5,  dmgc = 2, atk = 1, armor = 0, atype = "pierce" },
+    siege   = { hp = 935,  gold = 72, hpc = 0,  goldc = 0,   dmg = 40.5,  dmgc = 0, atk = 3, armor = 0, atype = "siege" },   -- siege does not upgrade per-cycle
+    smelee  = { hp = 700,  gold = 26, hpc = 19, goldc = 1.5, dmg = 40,    dmgc = 2, atk = 1, armor = 3, atype = "basic" },   -- super (post-barracks)
+    sranged = { hp = 475,  gold = 25, hpc = 18, goldc = 6,   dmg = 43.5,  dmgc = 3, atk = 1, armor = 1, atype = "pierce" },
+    mmelee  = { hp = 1270, gold = 26, hpc = 0,  goldc = 0,   dmg = 100,   dmgc = 0, atk = 1, armor = 3, atype = "basic" },   -- mega (base-only; end-game)
+    mranged = { hp = 1015, gold = 25, hpc = 0,  goldc = 0,   dmg = 133.5, dmgc = 0, atk = 1, armor = 1, atype = "pierce" },
 }
 local function _stat_hp(s, cyc)   return s.hp + s.hpc * cyc end
 local function _stat_gold(s, cyc) return s.gold + s.goldc * cyc end
@@ -347,11 +589,136 @@ function Lane.ExpectedWave(game_time, opts)
              + siege * _stat_hp(ss, cyc) + flagbearer * _stat_hp(fs, cyc)
     local gold = melee * _stat_gold(ms, cyc) + ranged * _stat_gold(rs, cyc)
              + siege * _stat_gold(ss, cyc) + flagbearer * _stat_gold(fs, cyc)
-    if flagbearer > 0 then gold = gold + flagbearer * (10 + _stat_gold(fs, cyc)) end  -- flagbearer area gold (10 + bounty)
+    -- Piece 1.5 fix: the flagbearer's BOUNTY is already in the base sum above; the area term adds
+    -- ONLY the +10 area gold. The old `10 + bounty` term double-counted the bounty (218 vs real 179).
+    if flagbearer > 0 then gold = gold + flagbearer * 10 end
 
     return { wave = wave, cycle = cyc, melee = melee, ranged = ranged, siege = siege,
              flagbearer = flagbearer, count = melee + ranged + siege + flagbearer,
              hp = hp, gold = gold, strength = hp }
+end
+
+-- ---- lane combat sim + push forecast (Piece 1.5: lanes push each other) ---------------------
+-- User model: an imbalance of 1 creep gives more DAMAGE, not only life - attrition COMPOUNDS
+-- (the extra creep both soaks and keeps shooting while the enemy's dps shrinks). So the push is
+-- SIMULATED per attacker, never inferred from an hp-pool comparison.
+
+-- attack-type vs BASIC (creep) armor multipliers. VERIFY: Liquipedia does not publish the attack-
+-- type table (Armor page has only the armor formula, 3 pages checked 2026-07-01); values are the
+-- standard KV-documented table. pierce 1.5x vs creeps is the one that matters here (why ranged
+-- creeps shred creeps); a wrong value shows up as systematic bias in the --lane-report push judge.
+local ATK_VS_BASIC = { basic = 1.0, pierce = 1.5, siege = 1.0, hero = 1.0 }
+local function _armor_mult(armor) return 1 - (0.06 * armor) / (1 + 0.06 * math.abs(armor)) end
+
+---discrete attrition sim between two combatant lists ({ hp, dmg, atk, armor, atype } each; list
+---order = focus order, front-most first). Both sides FOCUS the first living foe; damage lands
+---simultaneously per tick (razor-edge mutual kills resolve as mutual). opts.support_a/support_b =
+---untargetable attackers (towers). Pure, deterministic.
+---@return table { winner = "a"|"b"|"draw", t, remnant_a, remnant_b }
+function Lane.SimFight(a, b, opts)
+    opts = opts or {}
+    local dt, tmax = opts.dt or 0.25, opts.t_max or 90
+    local function prep(list)
+        local out = {}
+        for i, u in ipairs(list or {}) do
+            out[i] = { hp = u.hp or 0, dmg = u.dmg or 0, atk = u.atk or 1,
+                       armor = u.armor or 0, atype = u.atype or "basic", next_at = 0 }
+        end
+        return out
+    end
+    local A, B   = prep(a), prep(b)
+    local sA, sB = prep(opts.support_a), prep(opts.support_b)
+    local function first_alive(t) for i = 1, #t do if t[i].hp > 0 then return t[i] end end end
+    local function volley(side, sup, tgt, t)
+        if not tgt then return 0 end
+        local d = 0
+        local function swing(u, targetable)
+            if targetable and u.hp <= 0 then return end
+            if u.next_at <= t then
+                d = d + u.dmg * (ATK_VS_BASIC[u.atype] or 1) * _armor_mult(tgt.armor)
+                u.next_at = u.next_at + u.atk
+            end
+        end
+        for i = 1, #side do swing(side[i], true) end
+        for i = 1, #sup do swing(sup[i], false) end
+        return d
+    end
+    local t = 0
+    while t < tmax do
+        local ta, tb = first_alive(B), first_alive(A)   -- A focuses ta; B focuses tb
+        if not (ta and tb) then break end
+        local da = volley(A, sA, ta, t)
+        local db = volley(B, sB, tb, t)
+        ta.hp = ta.hp - da                              -- simultaneous application: deaths resolve together
+        tb.hp = tb.hp - db
+        t = t + dt
+    end
+    local function rem(side)
+        local out = {}
+        for i = 1, #side do if side[i].hp > 0 then out[#out + 1] = side[i] end end
+        return out
+    end
+    local ra, rb = rem(A), rem(B)
+    local winner = (#ra > 0 and #rb == 0 and "a") or (#rb > 0 and #ra == 0 and "b") or "draw"
+    return { winner = winner, t = t, remnant_a = ra, remnant_b = rb }
+end
+
+-- kind -> stats key (flagbearer fights as a melee creep) + focus order (front-most first).
+local KIND_STATS = { melee = "melee", flagbearer = "melee", ranged = "ranged", siege = "siege" }
+local KIND_ORDER = { melee = 1, flagbearer = 2, siege = 3, ranged = 4 }
+
+---combat records from a wave: a REAL wave uses LIVE member hp + per-member kind (classified from
+---the unit name by the read wrapper); an ESTIMATED wave / plain composition table builds full-hp
+---records from its melee/ranged/siege/flagbearer counts. `cycle` scales dmg/hp per 7:30. Pure.
+function Lane.WaveCombatants(wave, cycle, opts)
+    local cyc = cycle or 0
+    local out = {}
+    local function rec(kind, hp)
+        local s = CREEP_STATS[KIND_STATS[kind] or "melee"]
+        out[#out + 1] = { hp = hp or _stat_hp(s, cyc), dmg = s.dmg + s.dmgc * cyc,
+                          atk = s.atk, armor = s.armor, atype = s.atype, kind = kind }
+    end
+    if wave and wave.creeps and #wave.creeps > 0 then
+        for _, cc in ipairs(wave.creeps) do rec(cc.kind or "melee", cc.hp) end
+    elseif wave then
+        for _ = 1, wave.melee or 0 do rec("melee") end
+        for _ = 1, wave.flagbearer or 0 do rec("flagbearer") end
+        for _ = 1, wave.ranged or 0 do rec("ranged") end
+        for _ = 1, wave.siege or 0 do rec("siege") end
+    end
+    table.sort(out, function(x, y) return (KIND_ORDER[x.kind] or 1) < (KIND_ORDER[y.kind] or 1) end)
+    return out
+end
+
+---iterated push forecast: SimFight the current waves; each following round the LOSER's side is a
+---fresh full wave (30s cadence) while the winner carries its remnant + a fresh wave - the snowball
+---trend across rounds is the push. Output: bal = round-1 net survivors (signed lane balance, + = a
+---wins), first_t = round-1 fight duration (the peta basis), rounds = {{winner, t, net}}.
+---(Front-position trajectory / crash_eta = deferred until the merge model is judged in-client -
+---the --lane-report push judge scores bal against OBSERVED front movement, which needs no model.)
+function Lane.PushForecast(ally_wave, enemy_wave, opts)
+    opts = opts or {}
+    local n = opts.rounds or 2
+    local A = Lane.WaveCombatants(ally_wave, opts.cycle)
+    local B = Lane.WaveCombatants(enemy_wave, opts.cycle)
+    local fresh = Lane.WaveCombatants(Lane.ExpectedWave(opts.game_time or 0, {}), opts.cycle)
+    local out = { rounds = {} }
+    for r = 1, n do
+        local f = Lane.SimFight(A, B, opts)
+        out.rounds[r] = { winner = f.winner, t = f.t, net = #f.remnant_a - #f.remnant_b }
+        if r == 1 then out.bal, out.first_t = out.rounds[1].net, f.t end
+        if r < n then                                     -- both sides reinforce; the winner keeps its remnant
+            local function merge(remnant)
+                local m = {}
+                for i = 1, #remnant do m[#m + 1] = remnant[i] end
+                for i = 1, #fresh do m[#m + 1] = { hp = fresh[i].hp, dmg = fresh[i].dmg, atk = fresh[i].atk,
+                                                   armor = fresh[i].armor, atype = fresh[i].atype, kind = fresh[i].kind } end
+                return m
+            end
+            A, B = merge(f.remnant_a), merge(f.remnant_b)
+        end
+    end
+    return out
 end
 
 -- ---- engine wrappers (verified in-game; nothing runs at load) -------------
@@ -365,9 +732,19 @@ local function _read_lane_creeps()
            and not (NPC.IsWaitingToSpawn and NPC.IsWaitingToSpawn(n)) then
             local p = Entity.GetAbsOrigin(n)
             if p then
+                -- Piece 1.5: kind from the unit NAME (npc_dota_creep_*_melee/ranged/siege/flagbearer)
+                -- for the combat sim (creep attack damage is NOT engine-readable - stats table by kind).
+                local nm = (NPC.GetUnitName and NPC.GetUnitName(n)) or ""
+                local kind = (nm:find("flagbearer", 1, true) and "flagbearer")
+                          or (nm:find("ranged", 1, true) and "ranged")
+                          or (nm:find("siege", 1, true) and "siege") or "melee"
                 out[#out + 1] = { pos = { x = p.x, y = p.y }, team = Entity.GetTeamNum(n),
                                   hp = Entity.GetHealth(n) or 0, max_hp = Entity.GetMaxHealth(n) or 0,
-                                  gold = (NPC.GetGoldBountyMax and NPC.GetGoldBountyMax(n)) or 0 }
+                                  gold = (NPC.GetGoldBountyMax and NPC.GetGoldBountyMax(n)) or 0,
+                                  kind = kind,
+                                  -- Piece 1.5: live EFFECTIVE speed (includes the first-15-wave
+                                  -- side-lane modifier) - the mirror READS it, never models it.
+                                  speed = (NPC.GetMoveSpeed and NPC.GetMoveSpeed(n)) or nil }
             end
         end
     end

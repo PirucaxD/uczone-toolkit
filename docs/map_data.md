@@ -84,3 +84,9 @@ for _, t in ipairs(MapData.TOWERS) do
     end
 end
 ```
+
+## What's new in this sync
+
+`MapData.SPAWNS` - the four side-lane creep spawn positions (captured from
+live games), the anchor points for fogged-wave estimation and the lane-path
+polylines in `lane`.

@@ -108,3 +108,18 @@ else
     -- recover (unsafe or out of mana)
 end
 ```
+
+## What's new in this sync (from the Tinker farm line)
+
+- `Schedule.Plan` v2: the veto cascade lives lib-side as tested rules -
+  thin-wave (VISIBLE only; fogged estimates never veto), far-wave travel
+  economics (`camp_alt_s`), gone-by-arrival, no-safe-stand, defend-crash
+  (never overrides unsafe), suppression, and the lane-first filler with its
+  invariant (a vetoed wave never resurrects through the filler). The mana
+  gate is regen-aware (mana at leave-by, not now).
+- `Schedule.NextWaveArrival` - wave-cadence prediction on the spawn grid,
+  measured-phase first (your last observed arrival), spawn-clock fallback.
+- `Schedule.NextOnGrid` / `Schedule.NextEvent` - the Dota clock (rune spawns,
+  neutral respawns) as one lookup.
+- `Schedule.SeqFits` - does an ability/channel sequence fit a time window.
+- `Schedule.StackWindow` - when to aggro a camp so it leaves at :53-:55.
