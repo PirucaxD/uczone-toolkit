@@ -35,22 +35,20 @@ real reference; these pages are the "do I want this lib at all?" overview.
 |-----|--------------|
 | [target](target.md) | composable predicates - is this a real enemy hero, is it killable... |
 | [timing](timing.md) | will the target be invuln / dispel out of my combo? |
-| [save_select](save_select.md) | given a threat, rank which of my save items actually counter it |
-| [defense](defense.md) | a save-dispatcher with a per-(target, mod, caster) lock so two of your fire paths can't double-save against one threat |
-| [escape](escape.md) | danger-aware positioning: self-displacement saves, fog / gank awareness, pike-advance |
+| [defense](defense.md) | the save dispatcher: threat in, ranked save chain out, first counter fires; a per-(target, mod, caster) lock stops double-saves |
+| [escape](escape.md) | danger-aware positioning: self-displacement saves, fog / gank awareness, pike-advance; carries `Escape.Vision`, the shared enemy last-seen tracker |
 | [item_saves](item_saves.md) | hero-agnostic defensive item save bodies (BKB, Lotus, Force, Pike, cyclones, blink...) |
+| [channel_gate](channel_gate.md) | pure kit-aware predicate: is an enemy in reach whose kit can break the channel I'm about to start? |
+| [hero_value](hero_value.md) | per-hero combat value: a KV role base times a live, peer-relative fed-ness multiplier |
 
 **Farming and lanes** - read the map and plan where to farm:
 
 | Lib | What it does |
 |-----|--------------|
-| [map](map.md) | live camp / tower / tree / pathing reads, plus nearest-anchor helpers |
+| [map](map.md) | live camp / tower / tree / pathing reads, nearest-anchor helpers; plus `Map.Nav` (safe-destination clamp, transport ladder, stuck detection), `Map.Towers` (alive latch + hp-slope death prediction), `Map.Positions` (per-hero position data) |
 | [map_data](map_data.md) | static map positions: camps, towers, outposts, fountains, lane creep spawns |
-| [lane](lane.md) | lane intel: creep waves, polyline mirror for fogged waves, clash / fight sim, intercept ETA |
-| [route](route.md) | receding-horizon farm-route planner: max risk-adjusted gold in a time horizon |
-| [schedule](schedule.md) | timing-anchored shove-cycle controller: plan, wave cadence, stack windows, sequence fitting |
-| [nav](nav.md) | movement composition: safe-destination clamp, keen/blink/walk transport ladder, stuck detection |
-| [towers](towers.md) | per-tower registry: alive flag (permanent dead latch) + measured hp-slope death prediction |
+| [lane](lane.md) | lane intel: creep waves, polyline mirror for fogged waves, clash / fight sim, intercept ETA; plus `Lane.Route` (receding-horizon farm-route planner) and `Lane.Schedule` (timing-anchored shove-cycle controller) |
+| [march_sim](march_sim.md) | pure, deterministic attrition sim for AoE-stream vs creep-wave interactions - calibrate cast leads offline |
 
 **Static game data** - generated from Valve's KV files (see `tools/`):
 

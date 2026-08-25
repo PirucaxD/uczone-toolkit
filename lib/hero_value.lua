@@ -1,5 +1,5 @@
 ---@meta
----lib/hero_value.lua: per-hero combat-value model for the FC TF value-arbiter
+---lib/hero_value.lua - per-hero combat-value model for the FC TF value-arbiter
 ---(Phase D). HeroValue.of(enemy, peers) = a role base x a live, peer-relative
 ---fed-ness multiplier.
 ---
@@ -17,6 +17,7 @@
 local HeroValue = {}
 
 local HD = require("lib.hero_data")   -- KV-generated hero reference (role tags, stats)
+local TD = require("lib.threat_data") -- kill-threat: ability -> threat modifier + severity
 
 -- KV role TAG -> base value. base() keys on the PRIMARY (first) tag of HD.role.
 -- KV tags: Carry, Nuker, Pusher, Initiator, Durable, Disabler, Escape, Support,
@@ -126,6 +127,35 @@ function HeroValue.of(enemy, peers)
     local ok = pcall(function() name = NPC.GetUnitName and NPC.GetUnitName(enemy) end)
     if not ok then name = nil end
     return HeroValue.base(name) * HeroValue.live_mult(enemy, peers)
+end
+
+-- Kill-threat weight: how dangerous a fogged/visible enemy is, multiplied into
+-- Escape.FogProximityRisk. PRECISE signal = a cataloged lethal ability
+-- (hero_data abilities -> ThreatData.AbilityToCanonical -> THREAT_PROFILE.severity);
+-- COMPLETE fallback = role tags (ABILITY_TO_THREAT is curated, not exhaustive).
+-- "Disabler"/"Nuker" are over-tagged so ignored; "Initiator" (dive-kill) and
+-- primary "Support" are the clean role signals. Calibratable; shared with Lina.
+HeroValue.KILL_W_HI   = 1.15  -- lethal kit / diving initiator (1.4 -> 1.15 v0.1.90: a carry like Razor inflated mid risk so Tinker bailed too early; softened so he holds mid longer, still recovers on genuine danger)
+HeroValue.KILL_W_BASE = 1.0   -- baseline (cores, unknown)
+HeroValue.KILL_W_LO   = 0.6   -- support-tagged, no lethal kit, not a diver
+
+function HeroValue.KillThreat(hero_name)
+    local h = HD.Get(hero_name)
+    if not h then return HeroValue.KILL_W_BASE end
+    local lethal = false
+    if h.abilities then
+        for _, ab in ipairs(h.abilities) do
+            local mod = TD.AbilityToCanonical(ab)
+            if mod then
+                local prof = TD.THREAT_PROFILE[mod]
+                if prof and prof.severity == "lethal" then lethal = true; break end
+            end
+        end
+    end
+    local role = h.role or ""
+    if lethal or role:find("Initiator") then return HeroValue.KILL_W_HI end
+    if role:find("Support") then return HeroValue.KILL_W_LO end
+    return HeroValue.KILL_W_BASE
 end
 
 -- Cluster value tie-break (FC consumer 3b). Given parallel per-anchor arrays of

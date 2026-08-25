@@ -1,13 +1,13 @@
 ---@meta
----lib/dedup.lua , generic event-dedup helpers (state-container design).
+---lib/dedup.lua - generic event-dedup helpers (state-container design).
 ---
 ---Two independent dedup concerns:
----  - anim-log dedup    , "did I just log this anim event?" (per-caster, per-ability)
----  - threat dedup      , "did I already respond to this threat instance?" (per-caster, per-modifier)
+---  - anim-log dedup    - "did I just log this anim event?" (per-caster, per-ability)
+---  - threat dedup      - "did I already respond to this threat instance?" (per-caster, per-modifier)
 ---
 ---**State-container design (v6.15.115 redesign).** An earlier draft kept
 ---module-private dedup tables. That broke the consuming brain's external
----readers , Sniper has 5+ sites that iterate / clear / GC its
+---readers - Sniper has 5+ sites that iterate / clear / GC its
 ---`state.responded_threats` and `state.anim_log_dedup` tables directly.
 ---
 ---Fix: every function takes the caller-owned table as its FIRST argument.
@@ -42,7 +42,7 @@ Dedup.ANIM_WINDOW = 1.0
 
 ---A single threat instance (one Bane casting one Nightmare) should produce
 ---at most one save action. Multiple observation paths (anim event,
----modifier-create) can see the same threat. Window: 2.0s , large enough to
+---modifier-create) can see the same threat. Window: 2.0s - large enough to
 ---cover slow-cast → modifier-landing windows (Fiend Grip 0.2s cast etc.)
 ---but short enough that re-casts within normal CD (Nightmare 12s) aren't
 ---conflated.
@@ -59,7 +59,7 @@ end
 
 ---Anim-log throttle. Returns true if an identical anim event was logged in
 ---the last ANIM_WINDOW (caller should still PROCESS the event, just skip
----the log). Stamps `tbl` on every call , "throttle-and-mark" in one.
+---the log). Stamps `tbl` on every call - "throttle-and-mark" in one.
 ---@param tbl table caller-owned dedup table ("<caster_idx>:<ability>" → time)
 ---@param caster userdata|nil
 ---@param ability_name string|nil
@@ -74,7 +74,7 @@ function Dedup.anim_throttled(tbl, caster, ability_name)
     return false
 end
 
----Threat-response already-responded check. Read-only , does NOT mark.
+---Threat-response already-responded check. Read-only - does NOT mark.
 ---@param tbl table caller-owned dedup table ("<caster_idx>:<mod>" → time)
 ---@param caster userdata|nil
 ---@param mod_name string|nil
@@ -127,7 +127,7 @@ end
 
 ---Clear a threat instance's responded mark, so the NEXT observation of the
 ---same (caster, mod) is treated as a fresh occurrence and not deduped. Call
----when a genuinely new instance of the threat is detected , e.g. a repeated
+---when a genuinely new instance of the threat is detected - e.g. a repeated
 ---instant-blink cast: each cast deserves its own save, and the flat
 ---THREAT_WINDOW dedup would otherwise swallow the second one.
 ---@param tbl table caller-owned dedup table

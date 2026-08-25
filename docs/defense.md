@@ -6,6 +6,13 @@ of accessors at init, and after that every site in your brain that
 wants to fire a save calls `Dispatch` instead of issuing the save
 itself.
 
+This lib supersedes the removed `save_select`. Same job, done as a
+dispatcher: a threat modifier resolves to a category, the category to
+a ranked chain of saves, and the first available save fires. If you
+were requiring `lib.save_select`, port to `Defense.New` plus
+`Dispatch`; everything the old lib picked is picked here by
+`ResolveSaveOrder`, with the per-threat lock on top.
+
 The reason for sharing this is the lock. When a brain has more than
 one route into the save chain (an anim subscriber that fires at
 cast-start, an armed-tick handler that fires at impact, a
@@ -25,6 +32,17 @@ modifier's remaining duration for an instant disable, capped at
 ~2.2s for periodic re-fire patterns so the next periodic tick can
 re-acquire). When the resolver does not have an entry for the
 canonical mod the lock falls back to a fixed window.
+
+The lock can also release EARLY, opt-in: register `cfg.item_on_cd(name)`
+and a held lock releases as soon as the fired save is confirmed spent
+(on cooldown), or after a give-up window (`cfg.lock_cd_giveup_s`,
+default 0.6s) if the issue never took, so the chain can advance to the
+next ready save on a genuine re-engage. It never releases sooner than
+the coalesce floor (`cfg.lock_cd_coalesce_s`, default 0.3s), so one
+threat instance's anim + modifier-create + armed routes still collapse
+to one save. The resolved TTL stays the unconditional upper backstop:
+this only ever releases sooner, never later. Heroes that do not
+register `item_on_cd` keep the full-TTL behaviour unchanged.
 
 ## Why a *canonical* mod name
 
@@ -306,10 +324,14 @@ local MY_ETA_RESOLVERS = {
   armed entry's stamped `cast_point + arm_t` (drift-free), falls back to a live
   `Ability.GetCastPoint(handle, true)`, then `cp_default`. Clamped to
   `>= floor_s` (default 0.1).
-- **`Remaining(mod_name, cap_s, floor_s)`** - active-debuff class. Reads
-  `NPC.GetModifierRemaining(target, mod_name)`. `cap_s` clamps the result so a
-  periodic re-fire pattern can re-acquire before the TTL elapses; `floor_s`
-  default 0.1.
+- **`Remaining(mod_name, cap_s, floor_s)`** - active-debuff class. Reads the
+  modifier's remaining time via `NPC.GetModifier` then `Modifier.GetDieTime`,
+  differenced against `GameRules.GetGameTime`. (There is no
+  `NPC.GetModifierRemaining` in the API, despite how many scripts call it; a
+  read through a non-existent function silently returns nothing and every
+  caller quietly takes its default, which is exactly how it went unnoticed
+  here for a long time.) `cap_s` clamps the result so a periodic re-fire
+  pattern can re-acquire before the TTL elapses; `floor_s` default 0.1.
 - **`DistSpeed(default_speed, blink_cap)`** - armed-chain / instant-blink class.
   Returns `dist(caster, target) / speed`, using the armed entry's stamped
   `eta_speed` when present else `default_speed`. `blink_cap` clamps for blink
@@ -323,16 +345,16 @@ local MY_ETA_RESOLVERS = {
 `cfg.eta_resolver_default`. It returns a closure bound to the supplied `TD` (so
 the lib takes no circular dependency on `threat_data`), reads the canonical mod's
 `THREAT_ARRIVAL_TIMING` entry, and branches by `entry.kind`:
-`channel_at_caster` -> caster-side `GetModifierRemaining`; `cast_point_*` ->
+`channel_at_caster` -> caster-side remaining-time read; `cast_point_*` ->
 `cast_point + post_cast_delay`; homing / blink kinds ->
 `dist(caster, target) / speed_fallback`; no catalog entry -> target-side
-`GetModifierRemaining`; nothing usable -> `nil` (the lib then falls back to
+remaining-time read; nothing usable -> `nil` (the lib then falls back to
 `cfg.fallback_lock_ttl_s`). `opts.lock_cap_s` caps the result (default 1.7s).
 
 | Function | Returns |
 |----------|---------|
 | `Defense.EtaResolvers.CastPoint(cp_default, floor_s)` | resolver: armed cast-point, else live `GetCastPoint`, else `cp_default`; clamped `>= floor_s` (0.1) |
-| `Defense.EtaResolvers.Remaining(mod_name, cap_s, floor_s)` | resolver: `GetModifierRemaining(target, mod_name)`, clamped to `cap_s` / `>= floor_s` (0.1) |
+| `Defense.EtaResolvers.Remaining(mod_name, cap_s, floor_s)` | resolver: modifier remaining time (`NPC.GetModifier` + `Modifier.GetDieTime`), clamped to `cap_s` / `>= floor_s` (0.1) |
 | `Defense.EtaResolvers.DistSpeed(default_speed, blink_cap)` | resolver: `dist / (armed.eta_speed or default_speed)`, capped by `blink_cap`, floored 0.05 |
 | `Defense.EtaResolvers.Line(speed, fog_fallback)` | resolver: `dist / speed`, or armed `eta_trigger` / `fog_fallback` (1.0) when caster is fogged |
 | `Defense.MakeGenericEtaResolver(TD, opts)` | catalog-aware default resolver bound to `TD`; branches on `THREAT_ARRIVAL_TIMING[mod].kind`, capped by `opts.lock_cap_s` (1.7) |
@@ -356,3 +378,38 @@ declares a `catch_radius` and `speed > 0`, and otherwise a tight
 | Function | Returns |
 |----------|---------|
 | `Defense.ComputeSaveFireWindow(threat_entry, speed, save_entry)` | `(lower, upper)` fire-window seconds for one save against one catalog threat |
+
+## Deferred dodge (eat the first strike, dodge mid-ult)
+
+Timing helpers for an enemy multi-strike ult that an untargetable save
+(cyclone class: Wind Waker / Eul) negates, but which REFUNDS if the
+target is untargetable at cast and WASTES if the target vanishes after
+it commits. Canonically Juggernaut Omnislash: dodging in the ~0.3s
+cast point cancels and refunds the ult; dodging mid-ult whiffs the
+remaining strikes, so the caster loses it. Hero-agnostic: the lib owns
+the decision and the defer state machine, the hero owns the trigger,
+the save chain, and the menu.
+
+`Defense.ShouldDeferDodge` is the pure decision: defer iff no
+IMMEDIATE save is ready (attack-immune but still targetable, e.g.
+Ghost / Ethereal, which does not cancel the cast) AND the target has
+the HP to safely eat the first strike. Below the floor, dodge at cast
+to survive: the caster keeps the ult, the target lives.
+
+`ArmDodgeDefer` arms the single pending defer (call it only when
+`ShouldDeferDodge` said yes), and `DodgeDeferTick` runs per frame. The
+tick WAITS through the caster's cast point (the ult modifier only
+lands at cast-complete, so a missing modifier right after arming does
+not clear the defer), then fires the hero's `dispatch(caster, via, hp)`
+once `now >= fire_at`, or early with `via = "hp_bail"` when a strike
+drops the target below `min_hp`. It fires only if `watch_modifier` is
+actually on the caster (present = the ult committed; absent =
+cancelled, refunded, or already over, so there is nothing to dodge),
+and clears itself when the target dies. The hero's dispatch closure
+runs its own save chain.
+
+| Function | Returns |
+|----------|---------|
+| `Defense.ShouldDeferDodge(immediate_ready, cur_hp, min_hp)` | `true` to defer the untargetable dodge: no immediate save ready and HP at or above the floor |
+| `dispatcher:ArmDodgeDefer(cfg)` | arms the one pending defer; `cfg` = `{ caster, watch_modifier, fire_at, min_hp }` |
+| `dispatcher:DodgeDeferTick(opts)` | per-frame tick; `opts` = `{ me, now, dispatch }`; fires `dispatch(caster, "mid_ult"|"hp_bail", hp)` when due, clears when the ult ends or the target dies |

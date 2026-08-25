@@ -1,5 +1,5 @@
 ---@meta
----lib/order.lua , single chokepoint for all brain-issued orders.
+---lib/order.lua - single chokepoint for all brain-issued orders.
 ---
 ---Discipline:
 ---  • Every order carries an identifier `<hero>-<layer>-<intent>` so we can
@@ -14,11 +14,11 @@
 ---Wiring: a hero brain or a bootstrap script should chain our handlers into
 ---its returned callbacks table via `Order.Wire(callbacks)`. The handlers are
 ---internally idempotent / frame-deduped, so multiple wirings are safe but
----wasteful , prefer wiring once from a bootstrap script.
+---wasteful - prefer wiring once from a bootstrap script.
 
 local Order = {}
 
--- v6.14.1 M8: STRICT was module-private before , there was no production
+-- v6.14.1 M8: STRICT was module-private before - there was no production
 -- path to flip it without editing this file. `Order.SetStrict(bool)` lets a
 -- bootstrap script or menu hook toggle this at runtime. Default true (dev).
 local STRICT = true
@@ -105,7 +105,7 @@ function Order.Identifier(hero, layer, intent)
 end
 
 ---Is an order with the given identifier prefix currently pending?
----Prefix match , e.g. `IsPending("sniper-agg-")` is true if any in-flight
+---Prefix match - e.g. `IsPending("sniper-agg-")` is true if any in-flight
 ---order's id starts with that prefix.
 ---@param prefix string
 ---@return boolean
@@ -204,7 +204,7 @@ function Order.Issue(spec)
     -- 6. Strip spurious target on order types that don't take one.
     if STRIPS_TARGET[order_type] and target ~= nil then
         if STRICT then
-            Log.Write("[order] spurious target for order_type " .. tostring(order_type) .. " , stripping")
+            Log.Write("[order] spurious target for order_type " .. tostring(order_type) .. " - stripping")
         end
         target = nil
     end
@@ -250,7 +250,7 @@ end
 -- callbacks (wire from your script's returned table)
 ----------------------------------------------------------------------------
 
----OnUpdateEx , garbage-collects expired entries from the pending registry.
+---OnUpdateEx - garbage-collects expired entries from the pending registry.
 ---Idempotent; multiple calls per frame are deduped to one GC pass.
 function Order.OnUpdateEx_handler()
     local f = frame()
@@ -267,7 +267,7 @@ function Order.OnUpdateEx_handler()
     end
 end
 
----OnPrepareUnitOrders , passthrough. Reserved for future arbitration
+---OnPrepareUnitOrders - passthrough. Reserved for future arbitration
 ---(e.g., yielding to baseline orders on shared cooldowns). v1 returns true
 ---unconditionally so the order proceeds; the dispatch record is already in
 ---the pending registry from Order.Issue.
@@ -278,7 +278,7 @@ function Order.OnPrepareUnitOrders_handler(_data)
 end
 
 ---Chain Order's handlers into a callbacks table the script will return.
----Handles the case where the caller has already set its own handlers , we
+---Handles the case where the caller has already set its own handlers - we
 ---call the prior handler first, then ours.
 ---@param callbacks table
 function Order.Wire(callbacks)

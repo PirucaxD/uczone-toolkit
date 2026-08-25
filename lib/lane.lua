@@ -2,7 +2,7 @@
 ---lib/lane.lua - lane intelligence (creep waves, equilibrium, intercept). Hero-agnostic.
 ---Pure analysis core (offline-tested) + thin engine wrappers (verified in-game), mirroring
 ---lib/map.lua. Pure functions use scalar math (read .x/.y, build {x,y}); only the wrappers
----touch the engine, and NOTHING calls the engine at load time. See .
+---touch the engine, and NOTHING calls the engine at load time.
 local Lane = {}
 
 -- ---- pure helpers --------------------------------------------------------
@@ -91,7 +91,7 @@ function Lane._assign_lane(point, opts)
     else return "mid" end
 end
 
--- ---- lane polylines + arc-length mirror (Piece 1.5, ) ------------
+-- ---- lane polylines + arc-length mirror -------------------------------------------------
 -- Fair-game symmetry (user model): both sides' role-paired waves share spawn cadence, travel
 -- distance, and speed. So fogged enemy waves are never MODELED - they are our own always-visible
 -- waves MIRRORED by arc length along the lane polylines. Visible lanes are read directly.
@@ -305,6 +305,54 @@ function Lane.PredictMeeting(a, b)
     return { point = { x = a.pos.x + dx * f, y = a.pos.y + dy * f }, eta = gap / close }
 end
 
+-- max live member speed of a wave (est waves carry .speed from the mirror; real waves from members).
+function Lane.WaveSpeed(w)
+    if not w then return nil end
+    -- v0.1.256 arc B re-applied: the MEASURED displacement beats
+    -- the stat - a body-blocked wave reads 325 by stat while standing still (run-64: mid moved
+    -- <100 u/s for 25% of the run; run-71: five 22-60s stand waits on held waves). Floor 20
+    -- keeps PredictMeeting alive (close > 0), so a HELD wave yields an honest HUGE eta and the
+    -- existing far_wave/slack economics jungle it - no new veto.
+    if w.speed_measured then return math.max(20, w.speed_measured) end
+    if w.speed then return w.speed end
+    local s
+    for _, cc in ipairs(w.creeps or {}) do if cc.speed and (not s or cc.speed > s) then s = cc.speed end end
+    return s
+end
+
+---MEASURED front speed (arc B, the lane-freeze study): real lanes get held/frozen by the
+---enemy laner - a body-blocked wave's stat speed (NPC.GetMoveSpeed) reads 325 while its
+---displacement is ~0, so every stat-fed meeting eta is optimistic by the whole freeze.
+---Pure state-in/state-out tracker (the Towers.Track pattern): EMA of the front's
+---displacement per key across scan ticks. A front JUMP beyond opts.jump (700 u/s) = a new
+---wave replaced the old -> the measurement resets. A sample staler than opts.stale_s (6)
+---or a nil front (fog) returns nil - the caller falls back to the stat.
+---@return table track, number|nil speed
+function Lane.TrackFrontSpeed(track, key, front, now, opts)
+    track = track or {}
+    local e = track[key]
+    if front then
+        if e and e.t and now > e.t then
+            local dx, dy = front.x - e.x, front.y - e.y
+            local inst = math.sqrt(dx * dx + dy * dy) / (now - e.t)
+            if inst > ((opts and opts.jump) or 700) then
+                track[key] = { x = front.x, y = front.y, t = now }   -- new wave: reset
+            else
+                local a = (opts and opts.ema) or 0.5
+                e.ema = e.ema and (a * e.ema + (1 - a) * inst) or inst
+                e.x, e.y, e.t = front.x, front.y, now
+            end
+        elseif not e then
+            track[key] = { x = front.x, y = front.y, t = now }
+        end
+        e = track[key]
+    end
+    if e and e.ema and e.t and now - e.t <= ((opts and opts.stale_s) or 6) then
+        return track, e.ema
+    end
+    return track, nil
+end
+
 -- ---- clash equilibrium + intercept ---------------------------------------
 
 ---equilibrium + movement prediction for a lane. contact = where the fronts meet; each side's
@@ -361,12 +409,30 @@ function Lane.PredictClash(enemy_wave, ally_wave, towers, opts)
         local rate = drift_coeff * math.abs(b) * creep_speed
         local travel = rate * horizon
         local defend_team = (b > 0) and (ally_wave and ally_wave.team) or (enemy_wave and enemy_wave.team)
-        for _, t in ipairs(towers or {}) do        -- clamp at the nearest defending tower ahead; reaching one = crashing
+        -- v0.1.383: the pick is a PROXIMITY test, not an unbounded ray. It scored ONLY the
+        -- projection along drift_dir, so a tower anywhere sideways won on a tiny projection.
+        -- `along` cannot exceed drift_coeff * creep_speed * horizon (~975 at shipped constants),
+        -- yet the logged contact-to-tower distance ran a median 3212 in g380 and 96.8-97.2% of
+        -- every crash stamp in g379/g380 named a tower the drift cannot physically reach. Those
+        -- stamps set State.crashSeen (in run_lane_scan; match by SHAPE, the line number shifts) and
+        -- CRASH_STICKY_S carries them 10s into a
+        -- decide where defend_crash skips the round-trip window check. A wave crashes a tower when
+        -- it comes within that tower's ATTACK RANGE of the drift segment - bounded sideways AND
+        -- ahead, both by the tower's own range, which the strength loop above already reads.
+        local best_along
+        for _, t in ipairs(towers or {}) do        -- nearest defending tower whose range the drift enters
             if t.alive ~= false and t.pos and t.team == defend_team then
-                local along = (t.pos.x - contact.x) * drift_dir.x + (t.pos.y - contact.y) * drift_dir.y
-                if along > 0 and along < travel then travel = along; crash_tower = t end
+                local tx, ty = t.pos.x - contact.x, t.pos.y - contact.y
+                local along  = tx * drift_dir.x + ty * drift_dir.y
+                local perp   = math.abs(tx * drift_dir.y - ty * drift_dir.x)
+                local rng    = t.range or 700
+                if along > 0 and along <= travel + rng and perp <= rng
+                   and (best_along == nil or along < best_along) then
+                    best_along, crash_tower = along, t
+                end
             end
         end
+        if best_along then travel = math.min(best_along, travel) end   -- never dragged past the budget
         crashing = crash_tower ~= nil                -- the wave pushes up to a defending tower (crashes into it)
         settle = { x = contact.x + drift_dir.x * travel, y = contact.y + drift_dir.y * travel }
         settle_eta = (rate > 0) and (travel / rate) or 0
@@ -456,7 +522,21 @@ function Lane.BuildLaneStates(creeps, towers, heroes, opts)
     local lanes = {}
     for _, lane in ipairs({ "top", "mid", "bot" }) do
         local ew, aw = eByLane[lane], aByLane[lane]
-        local clash = (ew or aw) and Lane.PredictClash(ew, aw, towers, opts) or nil  -- clash from VISIBLE positions only
+        -- v0.1.375: THIS LANE's towers, not all 24. PredictClash clamps the drift at the nearest
+        -- defending tower AHEAD (:397-402), scoring each by its projection ALONG drift_dir with NO
+        -- perpendicular bound, so any tower anywhere on the map with a positive projection could win
+        -- and become the crash target. Measured on 5 logs: 60-77% of every game's crash stamps named
+        -- an OFF-LANE tower (g374 156/224, ctd median 8087 against ctr=700, max 15431; one named a
+        -- bot-side tower at (4860,-6379) as TOP's crash target). Those stamps set State.crashSeen
+        -- (Tinker.lua:2573-2576) and CRASH_STICKY_S 10.0 carries them 10s forward into a decide,
+        -- where the defend_crash bypass (Tinker.lua:3741) skips the round-trip window check: g374
+        -- t=345.8 spent ~10.2s and a Keen on a top trip worth 0 gold on exactly that path.
+        -- towers_by_lane is already built above (:483-486) and already used correctly at :545/:561;
+        -- this was the one consumer still reading the unfiltered list. A lane's wave crashes that
+        -- lane's towers. ACCEPTED NARROWING: base/T4 towers sit near the diagonal and _assign_lane
+        -- (:86) puts them in "mid", so a side-lane wave pushing into the enemy base no longer reports
+        -- crashing - out of scope for the farm layer's defend, which is about OUR lane towers.
+        local clash = (ew or aw) and Lane.PredictClash(ew, aw, towers_by_lane[lane], opts) or nil  -- clash from VISIBLE positions only
         if not ew and opts.game_time then            -- fog-fill: estimate the unseen enemy wave (fogged ONLY)
             local est = Lane.ExpectedWave(opts.game_time, { super = opts.super, mega = opts.mega })
             est.lane, est.estimated = lane, true
@@ -535,7 +615,7 @@ end
 
 -- ---- expected wave by game time (Liquipedia-validated parametrization) ----
 -- Composition + per-cycle scaling for fog estimates + gold valuation. game_time in seconds on the
--- GAME CLOCK (0 = the first wave at 00:00). See  + Liquipedia Lane_Creeps.
+-- GAME CLOCK (0 = the first wave at 00:00). See Liquipedia Lane_Creeps.
 
 -- base melee/ranged by time threshold (ascending); siege/flagbearer handled by wave cadence below.
 local WAVE_COMP = {
@@ -557,6 +637,17 @@ local CREEP_STATS = {
 }
 local function _stat_hp(s, cyc)   return s.hp + s.hpc * cyc end
 local function _stat_gold(s, cyc) return s.gold + s.goldc * cyc end
+
+---per-creep expected stats at `game_time` (seconds, game clock). Pure. kind in
+---melee|ranged|siege|smelee|sranged|mmelee|mranged (see CREEP_STATS).
+---@return table|nil { hp, gold, dmg, atk, armor, atype }
+function Lane.CreepStats(kind, game_time)
+    local s = CREEP_STATS[kind]
+    if not s then return nil end
+    local cyc = math.min(30, math.floor(math.max(0, game_time or 0) / 450))
+    return { hp = _stat_hp(s, cyc), gold = _stat_gold(s, cyc),
+             dmg = s.dmg + s.dmgc * cyc, atk = s.atk, armor = s.armor, atype = s.atype }
+end
 
 ---expected wave composition + value at `game_time` (seconds, game clock). opts.super / opts.mega
 ---swap regular melee/ranged for super/mega stats (barracks state; default regular). Pure.
@@ -783,5 +874,622 @@ function Lane.ScanLanes(opts)
     end
     return Lane.BuildLaneStates(_read_lane_creeps(), _read_towers(), _read_heroes(), opts)
 end
+
+-- ---- S2 per-lane depth ruler (v0.1.327, the side-parity fix) ---------------
+-- The old depth zero (the FOUNTAIN midpoint) sits ~580 lane-units toward Radiant
+-- of the mid lane's true centre (the T1 midpoint = where waves actually meet), so
+-- every absolute depth threshold was ~580 stricter for Dire and ~580 looser for
+-- Radiant on mid. The ruler zeroes per lane instead; the axis stays the fountain
+-- axis (vs the mid chord it differs by < 2 degrees). Pure functions - the hero
+-- brain AND tools/parse_debuglog's depth-audit consume THESE, so the auditor can
+-- never drift from the brain. Ceiling (S4, the tree review 2026-07-20):
+-- arc-length depth along BuildLanePaths if side-lane precision ever needs it -
+-- same contract, internal swap.
+
+---build the per-team depth ruler from static map data. towers/fountains are
+---map_data-shaped lists ({name=, team=, pos={x,y,z}}); team = the OWN team id.
+---Returns { ax, ay (unit axis own->enemy), zero = { mid={x,y}, top=..., bot=... } }
+---or nil when the inputs are unusable.
+function Lane.DepthRuler(towers, fountains, team)
+    local fp, ep
+    for _, f in ipairs(fountains or {}) do
+        if f.pos then
+            if f.team == team then fp = f.pos else ep = f.pos end
+        end
+    end
+    if not (fp and ep) then return nil end
+    local ax, ay = ep[1] - fp[1], ep[2] - fp[2]
+    local al = math.sqrt(ax * ax + ay * ay)
+    if al < 1 then return nil end
+    local acc = {}
+    for _, t in ipairs(towers or {}) do
+        local ln = t.name and t.name:match("tower1_(%w+)")
+        if ln and t.pos then
+            acc[ln] = acc[ln] or {}
+            table.insert(acc[ln], t.pos)
+        end
+    end
+    local zero = {}
+    for ln, ps in pairs(acc) do
+        if #ps == 2 then
+            zero[ln] = { x = (ps[1][1] + ps[2][1]) * 0.5, y = (ps[1][2] + ps[2][2]) * 0.5 }
+        end
+    end
+    if not zero.mid then return nil end
+    return { ax = ax / al, ay = ay / al, zero = zero }
+end
+
+---signed lane-frame depth of pos ({x,y} or Vector) for `lane` (defaults to mid;
+---an unknown lane falls back to mid). 0 = the lane's T1 midpoint (the meet
+---ground); + = enemy side; own mid T1 reads ~-1459, enemy mid T1 ~+1459.
+function Lane.Depth(ruler, pos, lane)
+    if not (ruler and pos) then return 0 end
+    local z = ruler.zero[lane or "mid"] or ruler.zero.mid
+    return (pos.x - z.x) * ruler.ax + (pos.y - z.y) * ruler.ay
+end
+
+-- ============================================================================
+-- ROUTE section (v0.1.395 consolidation: lib/route.lua absorbed VERBATIM; the
+-- math.h phase-1 merge). Route load-required
+-- Lane for InterceptETA; inlined, it closes over Lane directly. Mounted as
+-- Lane.Route below - a SUB-TABLE, not flattened, because Route.Plan and
+-- Schedule.Plan collide by name.
+-- ============================================================================
+
+---@meta
+---lib/route.lua - farm-route planning: a pure, receding-horizon, prize-collecting-within-a-time-
+---budget planner over a unified FarmTarget set. Hero-agnostic + stateless: NO engine calls, no
+---clock, no background loop. The hero passes plain FarmTarget records + its kinematic state +
+---weights, gets back the best ordered SEQUENCE, and executes only the first leg (re-planning on its
+---own cadence). Mirrors the lib/lane pure-core pattern.
+
+local Route = {}
+
+---one leg's travel time from `from_pos` to a target's pos, via the best ready teleport anchor or
+---plain walk (lib/lane.InterceptETA). Pure.
+---@return number eta seconds
+function Route._leg_time(from_pos, target, hero_state)
+    local r = Lane.InterceptETA(from_pos, hero_state.anchors, hero_state.move_speed,
+                                hero_state.tp, target.pos, nil)
+    return r.eta
+end
+
+---walk the timeline for a FIXED ordered sequence and return the collected subset + totals. Starting
+---at hero_state.pos and opts.now, each target adds a leg + a wait-until-window.from + clear_t; a
+---target is COLLECTED only if it finishes within the horizon and before window.to. The walk STOPS at
+---the first uncollectable target (a sequence is only as good as its collectable prefix). Times are
+---absolute on the same clock as opts.now (windows are absolute game-clock times). Pure.
+---@return table { collected = {FarmTarget,...}, gold = number, time = number }
+function Route._timeline(seq, hero_state, opts)
+    local now      = opts.now or 0
+    local deadline = now + (opts.horizon_s or 30)
+    local pos   = hero_state.pos
+    local clock = now
+    -- resource state; nil mana/hp -> gating is inert (back-compat with resource-free callers)
+    local mana, hp = hero_state.mana, hero_state.hp
+    local mrate = hero_state.mana_regen or 0
+    local hrate = hero_state.hp_regen   or 0
+    local mmax  = hero_state.max_mana   or math.huge
+    local hmax  = hero_state.max_hp     or math.huge
+    local rsv   = hero_state.reserve_mana or 0
+    local hpfl  = hero_state.hp_floor   or 0
+    local frac  = opts.refill_frac or hero_state.refill_frac or 1
+    local collected, gold = {}, 0
+    for i = 1, #seq do
+        local tg    = seq[i]
+        local start = clock + Route._leg_time(pos, tg, hero_state)
+        if tg.window and tg.window.from and tg.window.from > start then start = tg.window.from end
+        local gap = start - clock                         -- regen accrues over travel + wait
+        if mana then mana = math.min(mmax, mana + mrate * gap) end
+        if hp   then hp   = math.min(hmax, hp   + hrate * gap) end
+        local finish = start + (tg.clear_t or 0)
+        if finish > deadline then break end
+        -- round-trip reservation (opts.return_pos): a collected target must leave time to get back to
+        -- return_pos by the deadline, else it is dropped (a far target a one-step ETA made look cheap to
+        -- reach but expensive to leave). The return cost is KEEN-AWARE when opts.return_anchors is given
+        -- (Lane.InterceptETA = cheapest of a plain walk or a ready teleport anchor), so a camp near a keen
+        -- anchor is NOT over-excluded (the v0.1.93 pure-walk-back over-exclusion); this is consistent with
+        -- how the outbound leg is estimated. Straight-line return_speed path kept for anchor-free callers.
+        -- Gated on return_pos so other callers are unaffected. Pure (InterceptETA is scalar).
+        if opts.return_pos and not tg.restore then
+            local ret
+            if opts.return_anchors then
+                ret = Lane.InterceptETA(tg.pos, opts.return_anchors, opts.return_speed,
+                                        opts.return_tp, opts.return_pos).eta
+            elseif opts.return_speed and opts.return_speed > 0 then
+                local dx = (tg.pos.x or 0) - opts.return_pos.x
+                local dy = (tg.pos.y or 0) - opts.return_pos.y
+                ret = math.sqrt(dx * dx + dy * dy) / opts.return_speed
+            end
+            if ret and finish + ret > deadline then break end
+        end
+        if tg.restore then                                -- refill node: top up, spend the wait, no value
+            if mana then
+                -- COST-AWARE refill (ancient arc, 2026-07-04): top up at least enough for the NEXT
+                -- target (mana_cost + reserve), capped at max. The plain frac top-up (0.70 tempo
+                -- leave) blocked big-ticket camps (an ancient clear ~1200+) exactly at the levels
+                -- where the full pool first affords them - the refill node could never ENABLE what
+                -- it was inserted for.
+                local nxt = seq[i + 1]
+                local need = (nxt and not nxt.restore) and ((nxt.mana_cost or 0) + rsv) or 0
+                mana = math.min(mmax, math.max(mmax * frac, need))
+            end
+            if hp   then hp   = hmax * frac end
+            collected[#collected + 1] = tg
+            clock, pos = finish, tg.pos
+        else
+            local past_to = tg.window and tg.window.to and finish > tg.window.to
+            local afford  = (mana == nil or mana >= (tg.mana_cost or 0) + rsv)
+                        and (hp   == nil or (hp - (tg.hp_cost or 0)) >= hpfl)
+            if not past_to and afford then
+                collected[#collected + 1] = tg
+                -- time-decay (lane waves): a wave's gold is lost as it ages (denied / next wave), so its
+                -- value at COLLECTION decays from tg.born. Collecting it later (e.g. after a camp) is worth
+                -- less -> the planner orders decaying targets FIRST (catch waves in their window). Pure.
+                local v = tg.value or 0
+                if tg.decay_per_s then
+                    local age = start - (tg.born or now)
+                    if age > 0 then v = math.max(tg.value_floor or 0, v - tg.decay_per_s * age) end
+                end
+                gold = gold + v
+                if mana then mana = mana - (tg.mana_cost or 0) end
+                if hp   then hp   = hp   - (tg.hp_cost   or 0) end
+                clock, pos = finish, tg.pos
+            else
+                break
+            end
+        end
+    end
+    return { collected = collected, gold = gold, time = clock - now }
+end
+
+---risk-adjusted objective of a FIXED sequence: sum(value) - risk_weight*sum(risk) over the COLLECTED
+---targets, plus the totals for tie-breaking. Pure.
+-- #4: this is MAX risk-adjusted gold WITHIN the horizon, NOT gold/time. That is the correct GPM
+-- objective here: each ~30s window is filled with the most gold, ties break on less time, and since
+-- only leg-1 executes and the plan re-runs every leg, a near efficient set is never permanently lost
+-- to a far high-value one (the far camp's leg shrinks as the hero closes; max_leg_s bounds the reach).
+-- Deliberately not a gold/time rate: that would need a fragile time-weight knob for no measured gain.
+---@return table { score = number, gold = number, time = number, collected = table }
+---opts.step_decay (0..1, default 1 = off): positional discount on later steps' value in the
+---SCORE only (gold stays the true sum). Receding-horizon execution runs only leg 1 and replans;
+---later steps execute with probability < 1 (resource drift, new waves, cost-model error), so a
+---plan that banks its big value FIRST beats one that promises it later at equal totals. With
+---decay d, [small, big] scores small + d*big while [big now] scores big - the front-loaded
+---plan wins whenever the promise is thinner than the bank.
+function Route._score(seq, hero_state, opts)
+    local tl = Route._timeline(seq, hero_state, opts)
+    local rw, pen = opts.risk_weight or 0, 0
+    for i = 1, #tl.collected do pen = pen + rw * (tl.collected[i].risk or 0) end
+    local g = tl.gold
+    local dec = opts.step_decay
+    if dec and dec < 1 then
+        g = 0
+        local w = 1
+        for i = 1, #tl.collected do
+            g = g + w * (tl.collected[i].value or 0)
+            w = w * dec
+        end
+    end
+    return { score = g - pen, gold = tl.gold, time = tl.time, collected = tl.collected }
+end
+
+---the planner: the best ordered sequence (length <= opts.max_steps) maximizing risk-adjusted gold
+---collectable within opts.horizon_s. Eligible targets exclude contested + hard-risk-vetoed ones,
+---then are trimmed to the top opts.pool_cap by a cheap one-step value/time score (bounds the search).
+---A bounded DFS with feasibility pruning (stop extending once a target is uncollectable) + an
+---optimistic value bound (prune when the best possible remaining gold cannot beat the incumbent
+---score) returns the optimum within the bound. Pure. Empty -> { steps={}, gold=0, time=0, score=0 }.
+---opts: now, horizon_s, max_steps(=4), risk_weight, risk_hard(=1.0), pool_cap(=10).
+---@return table plan { steps = {FarmTarget,...}, gold, time, score }
+function Route.Plan(targets, hero_state, opts)
+    opts = opts or {}
+    local risk_hard = opts.risk_hard or 1.0
+    local max_steps = opts.max_steps or 4
+    local pool_cap  = opts.pool_cap  or 10
+
+    -- 1. eligibility filter (drop contested + hard-risk-vetoed + UNREACHABLE). opts.max_leg_s: drop a target
+    --    whose reach ETA from the hero (walk or ready teleport, via _leg_time) exceeds it, so the planner
+    --    never commits to a camp Tinker cannot get to before the move watchdog fires (the far-camp stuck).
+    --    Refill nodes are never distance-filtered. (Keen L2 creep-reach will relax this later.)
+    local pool = {}
+    for i = 1, #(targets or {}) do
+        local tg = targets[i]
+        if tg and tg.pos and not tg.contested and (tg.risk or 0) < risk_hard
+           and (tg.restore or not opts.max_leg_s or Route._leg_time(hero_state.pos, tg, hero_state) <= opts.max_leg_s) then
+            pool[#pool + 1] = tg
+        end
+    end
+
+    -- 2. trim to the top pool_cap by a cheap one-step score value/(leg+clear) from the hero now.
+    --    Sort a parallel {tg,s1} list so the caller's target tables are never mutated.
+    if #pool > pool_cap then
+        local restores, normals = {}, {}                 -- refill nodes (value 0) must never be trimmed
+        for i = 1, #pool do
+            if pool[i].restore then restores[#restores + 1] = pool[i] else normals[#normals + 1] = pool[i] end
+        end
+        -- #3: rank by the SAME risk-adjusted value the DFS objective uses (was value-only), so a close
+        -- RISKY camp no longer crowds a safer camp out of the pool before the planner ever weighs it.
+        -- Distance still discounts via the rate; the far-high-value-camp case is handled by pool_cap
+        -- (raise it, hero side) + receding re-planning (a far camp's leg shrinks as the hero closes).
+        local rw = opts.risk_weight or 0
+        local scored = {}
+        for i = 1, #normals do
+            local tg = normals[i]
+            local t  = Route._leg_time(hero_state.pos, tg, hero_state) + (tg.clear_t or 0)
+            scored[i] = { tg = tg, s1 = ((tg.value or 0) - rw * (tg.risk or 0)) / math.max(0.5, t) }
+        end
+        table.sort(scored, function(a, b) return a.s1 > b.s1 end)
+        pool = {}
+        local keep = math.max(0, pool_cap - #restores)
+        for i = 1, math.min(keep, #normals) do pool[i] = scored[i].tg end
+        for i = 1, #restores do pool[#pool + 1] = restores[i] end
+    end
+    local n = #pool
+
+    -- prefix sums of values sorted desc, for the optimistic remaining-gold bound (an upper bound:
+    -- it ignores travel/risk and may reuse values, so it never prunes a real improvement).
+    local vals = {}
+    for i = 1, n do vals[i] = pool[i].value or 0 end
+    table.sort(vals, function(a, b) return a > b end)
+    local prefix = { [0] = 0 }
+    for i = 1, n do prefix[i] = prefix[i - 1] + vals[i] end
+    local function top_sum(k) if k < 0 then k = 0 end; return prefix[math.min(k, n)] end
+
+    -- 3. bounded DFS over ordered sequences (each target at most once)
+    local best = { steps = {}, gold = 0, time = 0, score = 0 }
+    local used, seq = {}, {}
+    local function dfs(depth, gold_so_far)
+        if gold_so_far + top_sum(max_steps - depth) < best.score then return end   -- optimistic prune
+        for i = 1, n do
+            if not used[i] then
+                used[i] = true; seq[depth + 1] = pool[i]
+                local sc = Route._score(seq, hero_state, opts)
+                if #sc.collected == depth + 1 then            -- fully collectable prefix: valid + extendable
+                    if sc.score > best.score or (sc.score == best.score and sc.time < best.time) then
+                        local steps = {}
+                        for j = 1, depth + 1 do steps[j] = seq[j] end
+                        best = { steps = steps, gold = sc.gold, time = sc.time, score = sc.score }
+                    end
+                    if depth + 1 < max_steps then dfs(depth + 1, sc.gold) end
+                end
+                seq[depth + 1] = nil; used[i] = false
+            end
+        end
+    end
+    dfs(0, 0)
+    return best
+end
+
+---convenience: the single first leg to execute now (nil if no plan).
+---@return table|nil FarmTarget
+function Route.Select(targets, hero_state, opts)
+    return Route.Plan(targets, hero_state, opts).steps[1]
+end
+
+-- ============================================================================
+-- SCHEDULE section (v0.1.395 consolidation: lib/schedule.lua absorbed
+-- VERBATIM; same phase). Mounted as Lane.Schedule below.
+-- ============================================================================
+
+---@meta
+---lib/schedule.lua - timing-anchored shove-cycle controller. Hero-agnostic, PURE: no engine calls, no
+---clock, no loop. The hero assembles plain data (from lib/lane records + engine reads) and passes it in.
+---Mirrors the lib/lane pure-core pattern.
+local Schedule = {}
+
+---hybrid clear-time: compute the cast COUNT from wave eff-HP / March damage (self-adjusting), with
+---calibrated wall-clock per-cast durations. Pure.
+---BOUNDARY: this is the WAVE clear model (round-NEAREST - allied creeps + the live wave-clear exit
+---finish sub-half remainders). CAMPS use Farm.ClearBudget (ceil-style, capped) - no allies help
+---there, so under-budgeting strands creeps. Two models on purpose; do not unify.
+---@param eff_hp number   the mid wave's effective HP (visible sum, or ExpectedWave when fogged)
+---@param cal table { march_dmg_per_cast, cast_dur, robot_kill, rearm_channel }
+---@return table { casts, t_clear }
+function Schedule.ClearTime(eff_hp, cal)
+    cal = cal or {}
+    local dmg = cal.march_dmg_per_cast or 1
+    if dmg <= 0 then dmg = 1 end
+    -- Round to NEAREST (v0.1.99 revert of the v0.1.97 ceil): the ceil cast a wasteful extra W. The
+    -- trailing ranged creep was surviving NOT from a damage shortfall but because the SHOVE cast aimed at
+    -- the melee-weighted COUNT centroid, leaving the back ranged just outside the footprint's front edge
+    -- ("almost hit"). v0.1.99 fixes the AIM (the shove casts at the span-center-led point that covers the
+    -- ranged), so 2 casts + our clashing creeps clear the wave with NO extra W. A genuine sub-half-cast
+    -- remainder is finished by allied creeps + the live wave-clear early-exit in the engage.
+    local casts = math.max(1, math.floor((eff_hp or 0) / dmg + 0.5))
+    -- CADENCE + ONE robot tail (2026-07-01 lib review, aligned with the MEASURED camp model:
+    -- engage_done dur ~8.1 vs the old per-cast estimate 10.0). The robots deliver over ~6s and keep
+    -- killing DURING the Rearm channel, so charging robot_kill per cast double-counted the overlap;
+    -- only the LAST cast's robots finishing (one tail) is sequential cost on top of the cast cadence.
+    local t_clear = casts * (cal.cast_dur or 0)
+                  + (casts - 1) * (cal.rearm_channel or 0)
+                  + (cal.robot_kill or 0)
+    return { casts = casts, t_clear = t_clear }
+end
+
+---Next time a wave reaches the mid meeting point, on a period grid at a phase. The phase is
+---the MEASURED rhythm (last_wave_t % period) when last_wave_t is fresh (we shoved recently),
+---else the calibrated spawn-clock `phase` - so anticipation never breaks when mid is fogged or
+---after a missed wave. Always strictly > now. PURE.
+---CONTRACT (F1, 2026-07-01 deep review): `last_wave_t` must be an ARRIVAL time. The old glue fed
+---the wave's DEATH time (engage_done), biasing the measured phase LATE by the clear time (~3-5s) -
+---the WAVE_PHASE=17 guess partly compensated, hiding it. Feed the arrival (waveEta at engage).
+---@param now number  @param period number  @param phase number  @param last_wave_t number|nil  @param fresh_window number|nil
+---@return number arrival
+function Schedule.NextWaveArrival(now, period, phase, last_wave_t, fresh_window)
+    period = period or 30
+    local ph
+    if last_wave_t and (now - last_wave_t) <= (fresh_window or 2 * period) then
+        ph = last_wave_t % period
+    else
+        ph = (phase or 0) % period
+    end
+    return Schedule.NextOnGrid(now, period, ph)
+end
+
+-- ---- the Dota clock (general scheduling; 2026-07-01, Liquipedia-verified) ----------------------
+-- Anything on the game clock schedules through ONE table + one lookup: rune grabs (bottle refills),
+-- lotus picks, tormentor timing, night-caution windows, respawn/stack timing. Grid events carry
+-- { period, phase [, first] }; one-shots carry { times }; kill-anchored carry { first,
+-- respawn_after } (the caller passes the last kill time). Wisdom runes were REMOVED in 7.38
+-- (Shrines of Wisdom) - deliberately absent.
+
+Schedule.EVENTS = {
+    wave_spawn      = { period = 30,  phase = 0 },
+    neutral_respawn = { period = 60,  phase = 0 },                 -- spawn-box check at each :00
+    bounty_rune     = { period = 240, phase = 0 },                 -- jungle spots; river extras from 4:00
+    power_rune      = { period = 120, phase = 0, first = 360 },    -- first at 6:00, then every 2:00
+    water_rune      = { times = { 120, 240 } },                    -- 2:00 + 4:00 only, then gone
+    lotus           = { period = 180, phase = 0, first = 180 },    -- one per 3:00 per pool, cap 6
+    tormentor       = { first = 1200, respawn_after = 600 },       -- 20:00; respawn = kill + 10:00
+    day_start       = { period = 600, phase = 0 },
+    night_start     = { period = 600, phase = 300 },
+}
+
+---next time on a period grid at a phase, strictly > now. The generic core NextWaveArrival uses. Pure.
+function Schedule.NextOnGrid(now, period, phase)
+    local ph = (phase or 0) % period
+    local arrival = ph + math.ceil((now - ph) / period) * period
+    if arrival <= now then arrival = arrival + period end
+    return arrival
+end
+
+---next occurrence of a named clock event (Schedule.EVENTS). `last` = the last kill/consume time for
+---kill-anchored events (tormentor). nil = unknown event, expired one-shot, or kill-anchored with no
+---known kill (alive/untracked). Pure.
+---@return number|nil arrival
+function Schedule.NextEvent(name, now, last)
+    local e = Schedule.EVENTS[name]
+    if not e then return nil end
+    now = now or 0
+    if e.times then
+        for _, t in ipairs(e.times) do if t > now then return t end end
+        return nil
+    end
+    if e.respawn_after then
+        if now < e.first then return e.first end
+        return last and (last + e.respawn_after) or nil
+    end
+    local nxt = Schedule.NextOnGrid(now, e.period, e.phase)
+    if e.first and nxt < e.first then return e.first end
+    return nxt
+end
+
+---does a SEQUENCE of durations fit before `deadline`? The ability/channel scheduling primitive:
+---keen+rearm before leave_by; a combo inside a stun window; a save sequence before a projectile
+---lands. Pure.
+---@return table { fits, total, start_by }  -- start_by = the latest start that still fits
+function Schedule.SeqFits(durations, deadline, now)
+    local total = 0
+    for i = 1, #(durations or {}) do total = total + (durations[i] or 0) end
+    local start_by = (deadline or 0) - total
+    return { fits = start_by >= (now or 0), total = total, start_by = start_by }
+end
+
+---the cycle decision, v2 (2026-07-01 deep review): the whole shove/jungle/recover POLICY lives
+---here - the old hero-side "veto cascade" (8 sequential action mutations, the T4 fragile tangle)
+---is absorbed as ordered, declared rules. CLOCK-INDEPENDENT: arrival must be `now + relative ETA`
+---so `now` cancels in slack. ALL v2 inputs are OPTIONAL - a minimal ctx behaves exactly like v1.
+---ctx = {
+---  now, cal, travel_to_mid, mana, shove_cost, safe,
+---  wave = { arrival, eff_hp, present, visible },
+---  -- v2 (each nil = rule inactive):
+---  mana_regen,                  -- mana/s: gate on mana AT leave_by, not instantaneous (F2 -
+---                               --   the v0.1.82 idea, done in isolation this time)
+---  recover_s,                   -- fountain round-trip estimate -> output recover_fits (F3)
+---  far_travel_s, min_wave_ehp,  -- far+near-dead economy veto        -> jungle "deep_skip"
+---  thin_ehp,                    -- VISIBLE thin-wave veto (fogged never thin) -> "thin_wave"
+---  covers,                      -- false = no tower-safe covering stand -> "no_safe_stand"
+---  bal, bal_min,                -- push-sim balance: bal <= bal_min  -> jungle "losing_fight"
+---  defend_crash,                -- enemy wave crashing OUR tower -> force the shove (defend +
+---                               --   free farm); v2 deliberate fix: NEVER overrides unsafe
+---  suppressed,                  -- the mid stand recently proved unreachable (shove_stuck)
+---  filler = { min_camp_slack, min_fountain_slack, need_recharge },   -- the lane-first filler
+---}
+---INVARIANTS (pinned by tests): a VETOED jungle never resurrects through the filler (BUG-1,
+---v0.1.124 - only reason=="slack" may convert); the deadline is ALWAYS the CURRENT wave's arrival -
+---defer-to-next-wave is a proven dead end (v0.1.78-83, every variant reverted) and NO rule may
+---reintroduce it.
+---@return table { action, reason, deadline, leave_by, slack, casts, t_clear, mana_at_leave_by,
+---                recover_fits }
+function Schedule.Plan(ctx)
+    ctx = ctx or {}
+    local wave = ctx.wave or {}
+    local cl = Schedule.ClearTime(wave.eff_hp, ctx.cal)
+    local lead = (ctx.cal and ctx.cal.lead) or 0
+    local arrival = wave.arrival or 0
+    local leave_by = arrival - (ctx.travel_to_mid or 0) - lead
+    local slack = leave_by - (ctx.now or 0)
+    local mana_at = (ctx.mana or 0) + (ctx.mana_regen or 0) * math.max(0, slack)
+
+    local action, reason
+    if not ctx.safe then                                action, reason = "recover", "unsafe"
+    elseif mana_at < (ctx.shove_cost or 0) then         action, reason = "recover", "mana"
+    elseif slack <= 0 then                              action, reason = "shove", "due"
+    -- v0.1.360 TOP UP WHILE THERE IS TIME (user: "using two Ws is the main idea because it makes
+    -- more likely to not lose any creep. If we have time to refill, there is no reason to not do it
+    -- on lane phase"). Two Marches clear a full wave; one leaks creeps.
+    -- WHY IT LIVES HERE AND NOWHERE ELSE. A "shove" verdict is only ever reached at slack <= 0, i.e.
+    -- the wave is ALREADY DUE - so refusing a shove for mana cannot buy a refill that arrives in
+    -- time, it just abandons the wave, and reason=="mana" routes the hero to RETURN. The ONLY moment
+    -- the user's "if we have time" condition can be true is this slack branch, where the wave is not
+    -- due yet and the hero would otherwise go jungle. So: top up now, arrive funded, clear it in two.
+    -- BOUNDED THREE WAYS so it cannot become a fountain loop or a farming stall:
+    --   * ctx.shove_cost_full is nil outside lane phase (the hero only fills it while the enemy mid
+    --     T1 stands) and nil below Rearm level 1, so the deep era and the pre-ultimate game are
+    --     byte-identical to before;
+    --   * the refill must FIT the slack (recover_s), the same predicate recover_fits reports below;
+    --   * shove_cost itself is untouched, so the pre-existing mana verdict above is unchanged.
+    --   * and NEVER on a defend: reason=="mana" is one of the three verdicts defend_crash may not
+    --     override (v0.1.337 at :228), so without this clause a wave crashing OUR tower - zero
+    --     travel, zero depth risk, free farm - would be silently dropped at mana levels that fund a
+    --     Rearm and a March comfortably. A defend needs no Keen and no trip, so the two-cast TRIP
+    --     price is simply the wrong price for it.
+    elseif ctx.shove_cost_full and mana_at < ctx.shove_cost_full
+           and not ctx.defend_crash
+           and (ctx.recover_s == nil or slack >= ctx.recover_s) then
+                                                        action, reason = "recover", "mana"
+    else                                                action, reason = "jungle", "slack" end
+
+    -- shove vetoes, in the validated hero-cascade order. A FUNCTION since v0.1.197: the filler's
+    -- near_due conversion below must pass the SAME vetoes - run-26 t=220.4 walked 2435u to a
+    -- covers=false stand 1086 deep because slack>0 made the initial action "jungle", so the
+    -- vetoes (gated on action=="shove") never saw the wave before the filler flipped it to
+    -- shove/near_due. BUG-1 stopped the filler resurrecting VETOED shoves; this is its sibling:
+    -- a slack-jungle was never vetoed at all.
+    local function shove_vetoes(a, r)
+        if a ~= "shove" then return a, r end
+        if ctx.far_travel_s and (ctx.travel_to_mid or 0) > ctx.far_travel_s
+           and (wave.eff_hp or 0) < (ctx.min_wave_ehp or 0) then
+            return "jungle", "deep_skip"                  -- far + near-dead: not worth the trek
+        elseif ctx.camp_alt_s and 2 * (ctx.travel_to_mid or 0) > ctx.camp_alt_s then
+            -- Risk v2 axis 2 (task #11, user 2026-07-04): the ROUND-TRIP walk out-costs the camp
+            -- alternative ("we can clear 2 or 3 camps with the time tinker is walking"). GRADED
+            -- economics, not a positional veto: the hero feeds a raid-aware travel (an L2
+            -- creep-keen collapses it to ~the channel), so deep waves naturally re-qualify at
+            -- Keen L2 and the window goes to the jungle otherwise. nil = rule inactive.
+            return "jungle", "far_wave"
+        elseif ctx.gone then
+            -- gone-by-arrival (run-21, user: "farming empty waves that are deep"): the hero's
+            -- push sim says OUR wave clearly wins and the fight resolves BEFORE we can arrive -
+            -- there will be nothing to farm; the trek is pure GPM loss. Precise timing, NOT a
+            -- defer (the deadline stays the current wave; the window jungles). nil = inactive.
+            return "jungle", "gone_by_arrival"
+        elseif ctx.thin_ehp and wave.visible and (wave.eff_hp or 0) < ctx.thin_ehp then
+            return "jungle", "thin_wave"                  -- a lone creep: tower + allies handle it
+        elseif ctx.covers == false then
+            return "jungle", "no_safe_stand"              -- no tower-safe covering stand exists
+        elseif ctx.bal and ctx.bal_min and ctx.bal <= ctx.bal_min then
+            return "jungle", "losing_fight"               -- the push sim says we lose this fight
+        end
+        return a, r
+    end
+    action, reason = shove_vetoes(action, reason)
+
+    -- lane-first filler: ONLY a GENUINE slack-jungle may convert (BUG-1), and the near_due
+    -- conversion passes the same shove vetoes (v0.1.197) - a hold at an illegal/gone/thin wave
+    -- is exactly the deep walk-and-wait the vetoes exist to prevent.
+    local f = ctx.filler
+    if f and action == "jungle" and reason == "slack"
+       and (slack - (ctx.travel_to_mid or 0)) < (f.min_camp_slack or 0) then
+        if f.need_recharge and slack >= (f.min_fountain_slack or 0) then
+            action, reason = "recover", "recharge"        -- fountain trip, back for the fresh wave
+        elseif ctx.suppressed then
+            action, reason = "recover", "shove_stuck"     -- the stand just proved unreachable
+        else
+            action, reason = shove_vetoes("shove", "near_due")   -- hold at mid, W the wave ASAP - IF a shove is legal here at all
+        end
+    end
+
+    -- Measured case (run-72 t=445): a DUE shove at low HP dispatched legally (no enemy
+    -- visible at decide), then HP panic fired on arrival = the keen + a ~50s fountain round
+    -- trip donated. Mana always had recover gates; HP had only the filler's need_recharge,
+    -- which a due shove (slack <= 0) bypasses entirely. Self-state is a dispatch
+    -- precondition: below the bar, recover first - the wave re-competes after the refill.
+    -- nil ctx fields = rule inactive (back-compatible).
+    if action == "shove" and ctx.hp_frac and ctx.min_hp_frac and ctx.hp_frac < ctx.min_hp_frac then
+        action, reason = "recover", "low_hp"
+    end
+
+    -- defend: the enemy wave is crashing OUR tower - clear it (our safe side, defend + free farm).
+    -- Runs LAST over any veto, code-faithful to the cascade order - EXCEPT unsafe (v2 deliberate
+    -- fix: the old cascade could force a shove into a detected gank; safety keeps the last word)
+    -- AND covers==false (v0.1.198 audit HOLE B: a real defense happens at OUR tower where a legal
+    -- covering stand always exists; overriding no_safe_stand could commit a stand past the walk
+    -- line that dpts==0 cannot see - depth points only count past the enemy T1 spot).
+    -- v0.1.337: nor the MANA verdict (g337 t=627: a 240-mana defend raid keened in, cast
+    -- NOTHING, keened home - an unfundable defense recovers first and re-fires next decide).
+    -- v0.1.337.1 (final-review find): nor BELOW THE HP BAR - the hp predicate is checked HERE,
+    -- not via reason, because a jungle/slack verdict skips the :213 low_hp rule entirely
+    -- (action ~= shove there) and a reason-only exception would cover just the flip-back half.
+    if ctx.defend_crash and action ~= "shove" and reason ~= "unsafe"
+       and reason ~= "mana" and ctx.covers ~= false
+       and not (ctx.hp_frac and ctx.min_hp_frac and ctx.hp_frac < ctx.min_hp_frac) then
+        action, reason = "shove", "defend_crash"
+    end
+
+    return { action = action, reason = reason,
+             deadline = arrival, leave_by = leave_by, slack = slack,
+             casts = cl.casts, t_clear = cl.t_clear,
+             mana_at_leave_by = mana_at,
+             recover_fits = (action ~= "recover") or (ctx.recover_s == nil) or slack >= ctx.recover_s }
+end
+
+---THE CYCLE ARC (v0.1.339): what the
+---NEXT full wave cycle costs - two casts with their rearms and the keens out+home. Pure.
+---c = { w, rearm, keen }  (live per-level mana values, hero-read)
+function Schedule.WaveCycleCost(c)
+    c = c or {}
+    return 2 * ((c.w or 0) + (c.rearm or 0) + (c.keen or 0))
+end
+
+---the fountain-vs-park decision for a window no farm fill claimed (design sec 3; the
+---v0.1.340 g341 re-calibration): the TRIGGER is the .296 broke floor ONLY - fountain iff
+---the pool cannot fund the NEXT WAVE (hop cost + reserve). The FILL keeps the .302
+---semantics: need = the cycle cost floored at the broke bar, capped at max_pool - when he
+---goes, he fills for the full next cycle. HISTORY: v0.1.339 used the cycle cost as the
+---TRIGGER too, which read STRICTER at Keen L1 than the old 70-percent rule (630-670 vs
+---~460-520) - pools 577-642 that used to hold the forward tether posture fountained
+---instead (g341: home-refills 25 -> 31, fountain 16.6 -> 22.3 pct, tether 21.6 -> 6.8
+---pct, GPM 489 -> 356). Trigger on survival, fill for the cycle. Park otherwise.
+---ctx = { pool, max_pool, cycle_cost, broke_bar }
+function Schedule.CycleFill(ctx)
+    ctx = ctx or {}
+    local pool = ctx.pool or 0
+    if pool < (ctx.broke_bar or 0) then
+        local need = math.max(ctx.cycle_cost or 0, ctx.broke_bar or 0)
+        return { fill = "fountain", need = math.min(need, ctx.max_pool or need) }
+    end
+    return { fill = "park" }
+end
+
+---Stacking window (v0.1.224): neutral camps respawn at each game-clock minute when the box is
+---empty, so aggroing at ~:54 walks the old creeps across the :00 boundary and doubles the camp.
+---Returns absolute times on the caller's clock for the nearest still-makeable opportunity:
+---  aggro_at = when to aggro (base + opts.aggro_sec, next minute if this one is past),
+---  from     = when the maneuver effectively starts (aggro_at - 0.5; arriving earlier waits),
+---  to       = the latest acceptable FINISH (done + opts.to_slack) - a late start overruns it,
+---  done     = just past the :00 respawn (maneuver complete).
+---Pure; opts: aggro_sec (default 54), miss_slack (default 1.5, how late the aggro may start),
+---to_slack derived so start <= aggro_at + miss_slack collects and anything later does not.
+function Schedule.StackWindow(now, opts)
+    opts = opts or {}
+    local aggro = opts.aggro_sec or 54
+    local slack = opts.miss_slack or 1.5
+    local base = math.floor(now / 60) * 60
+    local aggro_at = base + aggro
+    if now > aggro_at + slack then aggro_at = aggro_at + 60 end
+    -- neutrals first spawn at 1:00 (opts.first_spawn): a minute-0 window (aggro 0:54) targets a
+    -- camp that does not exist yet - run-66 walked 40s to stack_abort empty on it. Roll forward.
+    local first = opts.first_spawn or 60
+    if aggro_at < first then aggro_at = aggro_at + 60 end
+    local done = (math.floor(aggro_at / 60) + 1) * 60 + 0.5
+    return { aggro_at = aggro_at, from = aggro_at - 0.5, done = done,
+             clear_t = done - aggro_at + 0.5, to = done + slack + 0.5 }
+end
+
+-- the consolidation mounts (phase 1): one file, one require, one returned table.
+Lane.Route = Route
+Lane.Schedule = Schedule
 
 return Lane

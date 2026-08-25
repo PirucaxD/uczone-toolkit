@@ -34,10 +34,6 @@ beats a marginal far one).
 `BestPointAim` does the same for a circular AoE of `radius`, sampling a candidate
 center at each unit position. It returns `(center, hit_count, hits)`.
 
-`CountInLine` is the building block: given a normalized `aim_dir`, it counts how
-many units a line of `length` and `half_width` would cover, returning
-`(count, hits)`. The caller normalizes `aim_dir`.
-
 ```lua
 local Farm = require("lib.farm")
 
@@ -47,9 +43,8 @@ if Farm.WorthCasting(hits, 3) then        -- only cast if it clears 3+ creeps
     issue_cast_position(dragon_slave, aim)
 end
 
--- best 250-radius circle, plus a direct line count along a fixed bearing:
-local center, n          = Farm.BestPointAim(creeps, 250)
-local through, line_hits = Farm.CountInLine(hero_pos, aim_dir, 1075, 110, creeps)
+-- best 250-radius circle:
+local center, n = Farm.BestPointAim(creeps, 250)
 ```
 
 ### Hitting a hero behind the wave
@@ -89,7 +84,6 @@ or `BestPointAim` hit count to decide whether a wave-clear is worth the cooldown
 |----------|---------|
 | `BestLineAim(origin, units, length, half_width [, opts])` | `(aim_pos, hit_count, hits, bonus_hit_count)`; `(nil, 0, {}, 0)` if nothing is hittable. `opts` = `{ bonus_units?, bonus_weight? (default 3), min_hits? }` |
 | `BestPointAim(units, radius [, opts])` | `(center, hit_count, hits)`; `(nil, 0, {})` on empty input. `opts` reserved |
-| `CountInLine(origin, aim_dir, length, half_width, units)` | `(count, hits)`; `(0, {})` on missing arguments. `aim_dir` is a normalized Vector |
 | `WorthCasting(hit_count, min_count)` | `boolean`, `hit_count >= min_count` (`min_count` defaults to 1) |
 
 ## Jungle / target valuation
@@ -112,23 +106,15 @@ count as 0:
 total gold the camp is worth. `EffectiveHP(creeps)` sums `hp` over the list, the
 denominator for clear-feasibility. Both return 0 for a nil or empty list.
 
-`CanClear(creeps, damage_budget)` is the feasibility predicate: `true` when the
-camp's total HP fits inside `damage_budget`. The hero supplies the budget (for
-example a per-cast damage from `lib/ability_data` times the planned number of
-casts for this camp type). A nil budget counts as 0.
+`ClearBudget(base, ehp, per_cast_dmg)` is the cast budget: how many casts this
+camp actually needs. It takes your baseline cast count for the camp type, the live
+effective HP (from `EffectiveHP`, which includes stacks), and your per-cast damage,
+and returns the larger of the two, so a stacked or unusually tanky camp is never
+under-budgeted while an ordinary one keeps its calibrated floor.
 
-`ScoreTarget(opts)` returns a single value score for one farm candidate, higher is
-better. It is `gold / time - risk * risk_weight`, where `opts` carries:
-
-| field | meaning | default |
-|-------|---------|---------|
-| `gold` | candidate gold, e.g. from `GoldValue` | 0 |
-| `time` | estimated seconds to acquire (travel + clear) | 0 |
-| `risk` | safety-layer risk in 0..1 | 0 |
-| `risk_weight` | gold/sec penalty per unit of risk | `Farm.DEFAULT_RISK_WEIGHT` (4.0) |
-
-`time` is floored at 0.5s internally to avoid a divide-by-zero on a zero-travel
-candidate.
+For ranking one candidate against another, see `Lane.Route`: the route planner
+scores whole sequences within a time budget rather than scoring targets one at a
+time, which is the better question to ask once you have more than one option.
 
 `IsContestedByAlly(pos, allies, opts)` keeps the farm bot from stealing a spot an
 allied core already owns. It returns `true` when any ally with value at least
@@ -160,17 +146,15 @@ when no enemy is on the minimap.
 local Farm = require("lib.farm")
 
 -- value one camp the hero can clear:
-if Farm.CanClear(camp, march_damage_budget)
-   and not Farm.IsContestedByAlly(camp_pos, allies) then
-    local score = Farm.ScoreTarget({
-        gold = Farm.GoldValue(camp),
-        time = travel_secs + clear_secs,
-        risk = Farm.StructuralRisk(camp_pos, {
-            our_fountain   = our_fnt,
-            enemy_fountain = enemy_fnt,
-            zones          = contested_zones,
-        }),
+if not Farm.IsContestedByAlly(camp_pos, allies) then
+    local gold  = Farm.GoldValue(camp)
+    local casts = Farm.ClearBudget(base_casts, Farm.EffectiveHP(camp), march_damage)
+    local risk  = Farm.StructuralRisk(camp_pos, {
+        our_fountain   = our_fnt,
+        enemy_fountain = enemy_fnt,
+        zones          = contested_zones,
     })
+    -- gold / (travel + casts * cast_time) - risk, or hand the candidate to Lane.Route
 end
 ```
 
@@ -178,16 +162,14 @@ end
 |----------|---------|
 | `GoldValue(creeps)` | `number`, summed `gold` (0 for nil/empty) |
 | `EffectiveHP(creeps)` | `number`, summed `hp` (0 for nil/empty) |
-| `CanClear(creeps, damage_budget)` | `boolean`, `EffectiveHP(creeps) <= (damage_budget or 0)` |
-| `ScoreTarget(opts)` | `number`, `gold / time - risk * risk_weight`; `opts` = `{ gold?, time?, risk?, risk_weight? }`; `time` floored at 0.5 |
+| `ClearBudget(base, ehp, per_cast_dmg)` | `number` of casts, `max(base, ceil(ehp / per_cast_dmg))` |
 | `IsContestedByAlly(pos, allies, opts)` | `boolean`; `opts` = `{ radius? (default 700), min_value? (default 0) }` |
 | `StructuralRisk(pos, opts)` | `number` in `[0, 1]`; `opts` = `{ our_fountain?, enemy_fountain?, half_weight? (default 0.5), zones? }` |
 
 ## Camp pairing
 
 Two helpers for clearing an adjacent camp PAIR with one wide cast (for example a
-single Tinker March covering both). Pure scalar math, only the returned points are
-Vectors, so both are offline-testable.
+single Tinker March covering both). Pure scalar math, offline-testable.
 
 `PairClearClass(d, opts)` classifies, by the inter-camp distance `d` alone, how
 well one centred cast (fired at roughly the midpoint) clears BOTH camps. Each camp
@@ -204,54 +186,40 @@ It returns `{ class = "clean"|"clip"|"none", full_margin = number, clip_margin =
 where `full_margin` is the outer-creep spare and `clip_margin` the nearest-creep
 spare (each `>= 0` means that creep is inside), for a calibration readout.
 
-`PairStandCandidates(A, B, opts)` returns an ordered list of stand spots for
-clearing the two camps centred at Vectors `A` and `B` with one cast. The cast lands
-at (near) the A-B midpoint so both camps stay within `+/- march_len/2`
-longitudinally; standing off the A-B axis by a perpendicular lateral offset finds
-walkable ground when the on-axis stand lands on terrain (the river pairs), at the
-cost of tilting the coverage rectangle. Candidates are emitted for each back
-distance x lateral offset (least-tilt first within each back), keeping only those
-that (1) stay within cast range of the cast point and (2) still cover both camps
-after the tilt. `opts`:
+`GreedyPairs(points, pair_max, min_sep, allow)` decides WHICH camps pair up. It
+walks the candidate points and pairs mutual nearest neighbours within `pair_max`,
+skipping anything closer than `min_sep` and anything `allow` rejects. Mutual
+nearest is the important part: pairing by "closest to me" alone makes A choose B
+while B chooses C, and the pick then flickers between passes. Every camp ends up in
+at most one pair, so the result is stable frame to frame.
 
-| field | meaning | default |
-|-------|---------|---------|
-| `cast_range` | cast range of the ability | 300 |
-| `range_pad` | margin subtracted from `cast_range` | 20 |
-| `halfwidth` | half-width of the coverage rectangle | 450 |
-| `march_len` | length of the coverage rectangle | 1800 |
-| `stand_ring` | default first back distance | 250 |
-| `pair_offset` | shift the cast point along the A->B axis | 0 |
-| `backs` | back distances to try (along the axis toward the stand) | `{ stand_ring, 180, 130 }` |
-| `lats` | lateral offsets to try | `{ 0, 110, -110, 220, -220 }` |
-
-Each entry is `{ stand = Vector, aim = Vector, back = number, lat = number, tilt = number }`,
-where `stand` is where the hero stands, `aim` is the cast point, and `tilt` is the
-far camp's offset from the tilted centreline (candidates whose tilt exceeds
-`halfwidth` are dropped). It returns `{}` when the pair is too far apart to cover
-longitudinally (`d/2 + |pair_offset| > march_len/2`) or the inputs are degenerate.
-The hero applies walkability and enemy risk to the ordered list and takes the first
-spot that passes.
+Feed the pair distance to `PairClearClass` to find out whether that pair is
+actually worth one cast.
 
 | Function | Returns |
 |----------|---------|
 | `PairClearClass(d, opts)` | `{ class = "clean"|"clip"|"none", full_margin, clip_margin }`; `opts` = `{ march_len? (default 1800), disc? (default 200) }` |
-| `PairStandCandidates(A, B, opts)` | ordered `{ {stand, aim, back, lat, tilt}, ... }`; `{}` when uncoverable/degenerate; `opts` keys above |
+| `GreedyPairs(points, pair_max, min_sep, allow)` | list of pairs by mutual-nearest matching; each point used at most once |
 
 ## What's new in this sync (from the Tinker farm line)
 
 The `shove` module's crash-push cast geometry moved in here, alongside the
-whole decision-support surface the farm brain grew:
+decision-support surface the farm brain grew:
 
-- `Farm.CrashCast(wave, opts)` - the crash-push stand + aim (replaces `shove`).
+- `Farm.CrashCast(clash_centroid, creep_line_dir, opts)` - the crash-push stand +
+  aim (replaces the old `shove` module).
 - `Farm.MarchCovers` / `Farm.OutsideTowerRange` - farmability predicates.
 - `Farm.GreedyPairs` - mutual-nearest camp pairing (stable, no flicker).
 - `Farm.ClearBudget` - stack-aware cast budget from live effective HP.
-- `Farm.CampCombatants` / `Farm.ClearTimeDPS` - per-camp fight math from
-  neutral stat tables (Liquipedia-verified).
-- `Farm.StackWindow` - the timed stack pull window for a camp.
-- `Farm.DepthPoints` - graded depth-risk points past the enemy T1 line
-  (Keen-ready shaves points); pairs with `Farm.PathRisk` (corridor risk
-  sampling hero->stand).
-- `Farm.WaveAimCenter`, `Farm.DeepFarmFactor`, `Farm.DepthLineRisk` - wave
-  aim and depth economics helpers.
+- `Farm.ObservedFarmers` - watch other heroes and treat a camp one of them has
+  stood on long enough as already taken.
+- `Farm.DepthPoints` - graded depth-risk points past the enemy T1 line; pairs
+  with `Farm.PathRisk` (corridor risk sampling hero to stand).
+- `Farm.WaveAimCenter` - the wave aim point.
+
+REMOVED in this sync, and worth knowing if you used them: `CanClear`,
+`ScoreTarget`, `CountInLine`, `PairStandCandidates`, `CampCombatants`,
+`ClearTimeDPS`, `DeepFarmFactor` and `DepthLineRisk` were retired upstream as
+dead code once the route planner and the depth-points model replaced them.
+`StackWindow` moved to [`Lane.Schedule.StackWindow`](lane.md). For target
+ranking use [`Lane.Route`](lane.md); for camp cast budgets use `ClearBudget`.

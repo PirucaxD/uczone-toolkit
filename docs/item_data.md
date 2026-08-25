@@ -18,7 +18,7 @@ live handle - drafting logic, cost math, "is this item a save".
 
 `SAVE_GEOMETRY` is the precise data - Force pushes 600u, Pike pushes the
 caster 600u but an enemy only 425u, BKB durations, cooldowns. It is what
-[save_select](save_select.md) reads.
+[defense](defense.md) reads.
 
 ## Helpers
 

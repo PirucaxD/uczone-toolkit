@@ -1,11 +1,11 @@
 ---@meta
----lib/timing.lua , predictive cast-window math.
+---lib/timing.lua - predictive cast-window math.
 ---
 ---Tier 2 helper for predicting *future* invuln / dispel / out-of-game
 ---states. Replaces `Target.WillBeInvulnIn` v1, which read currently-active
 ---state durations only.
 ---
----**Pure helpers** , no game-state mutation. Callers feed in:
+---**Pure helpers** - no game-state mutation. Callers feed in:
 ---  - The target entity.
 ---  - A look-ahead window in seconds.
 ---Returns one of `"safe"` / `"will_be_invuln"` / `"likely_dispel"` /
@@ -22,10 +22,10 @@ local MS = Enum.ModifierState
 -- below. Repopulate when in-flight modifier observation is available.
 
 -- Items the target may activate this tick to escape. Cooldown ≤ window
--- means "could fire". Maps item internal name to its CAST POINT , we add
+-- means "could fire". Maps item internal name to its CAST POINT - we add
 -- this to the cooldown check so we know the order can resolve within the
 -- prediction window. v6.15.2 C4: dropped `item_eul_scepter` (not a real
--- internal name in 7.41C , canonical is item_cyclone for the base Eul item).
+-- internal name in 7.41C - canonical is item_cyclone for the base Eul item).
 -- v6.15.2 H4: Aeon Disk has `passive = true` so the predictor gates on
 -- target HP being below the 70% trigger threshold instead of treating it
 -- like an active cast (which would always say "yes Aeon will pop").
@@ -40,7 +40,7 @@ local ESCAPE_ACTIVES = {
     item_satanic        = { cast_point = 0.0,  effect = "dispel_basic" },
 }
 
----Currently in an invuln-class state? (Predicts nothing , just reads.)
+---Currently in an invuln-class state? (Predicts nothing - just reads.)
 ---@param entity userdata|nil
 ---@return boolean
 function Timing.IsInvulnNow(entity)
@@ -88,7 +88,7 @@ function Timing.WillBeInvulnIn(entity, window_seconds)
             -- Passive trigger: HP must be below threshold for it to fire.
             if info.passive then
                 if hp_frac > (info.hp_trigger_frac or 0.70) then
-                    -- HP too high , won't trigger this commit. Skip.
+                    -- HP too high - won't trigger this commit. Skip.
                 else
                     local cd = Ability.GetCooldown(it) or 999
                     if cd <= window_seconds then return true, item_name end
@@ -151,6 +151,33 @@ function Timing.EscapeReadiness(entity, window_seconds)
         end
     end
     return best
+end
+
+---The arrival watchdog ruler (v0.1.334):
+---promise-relative overdue adjudication for a committed, PRE-CAST wave wait.
+---The live eta is NOT the ruler (a sliding promise never ages - g334 t=620 read
+---"~2s away" for 40 straight seconds); time past the ORIGINAL promise is.
+---A REAL, reachable, imminent scan read may extend the stand up to the cap;
+---estimates never pin (the .241 law's spirit). why on release: fog = no real
+---read; slow = real read but not imminent at wake; flicker = the cap tripped
+---while the scan still claimed imminence.
+---@param now number
+---@param promise0 number   the ORIGINAL committed arrival, never rolled
+---@param scan table|nil    { est=boolean, reach=boolean, eta=number|nil } latest lane read
+---@param k table           { grace=number, hold_t=number, hold_max=number }
+---@return string verdict   "hold" | "release"
+---@return string|nil why   set on release
+---@return number over      seconds past the promise (the logline held= value)
+function Timing.ArrivalWatchdog(now, promise0, scan, k)
+    local over = now - promise0
+    if over <= k.grace then return "hold", nil, over end
+    local real_eta = scan and (not scan.est) and scan.reach and scan.eta or nil
+    if real_eta and real_eta <= k.hold_t then
+        if over > k.hold_max then return "release", "flicker", over end
+        return "hold", nil, over
+    end
+    if real_eta then return "release", "slow", over end
+    return "release", "fog", over
 end
 
 return Timing

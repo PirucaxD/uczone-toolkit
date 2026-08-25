@@ -1,10 +1,10 @@
 ---@meta
----lib/geometry.lua , generic 2D position / distance / prediction helpers.
+---lib/geometry.lua - generic 2D position / distance / prediction helpers.
 ---
 ---Hero-agnostic. All functions take entity or vector args explicitly
 ---(no implicit hero-state reads).
 ---
----Extracted from the brain source v6.15.112 to reduce main-chunk local count.
+---Extracted from Sniper.lua v6.15.112 to reduce main-chunk local count.
 
 local Geometry = {}
 
@@ -39,7 +39,7 @@ end
 ---Returns the target's CURRENT position (no lead) when the target is
 ---valid but not actually moving.
 ---
----v6.15.125 REWRITE , the old model was mathematically wrong. It used
+---v6.15.125 REWRITE - the old model was mathematically wrong. It used
 ---`NPC.GetMoveSpeed`, which is a move-speed STAT (≈285-330 for any hero,
 ---non-zero while standing still), projected along the facing yaw. So a
 ---STATIONARY target had its zone placed `GetMoveSpeed * lead_s` (~450u
@@ -53,7 +53,7 @@ end
 ---(a stationary target keeps its centre), real velocity → correct
 ---travel direction and speed. `future = pos + velocity * lead_s`.
 ---Pattern proven in the Windranger 2 third-party script (Shackleshot
----leads). `m_vecVelocity` is an undocumented Source 2 field , pcall-
+---leads). `m_vecVelocity` is an undocumented Source 2 field - pcall-
 ---guarded; the fallback (facing × move-speed, only while a move order
 ---is live) is the old model but at least gated so it never leads a
 ---standing unit.
@@ -95,7 +95,7 @@ end
 -- smoothed velocity prediction (vel_hist) + AoE-coverage placement
 -- Added 2026-05-28. Hero-agnostic; mirrors the inline sample_velocities /
 -- predict_pos model proven in Sniper (Sniper keeps its own inline copy for now;
--- see the prediction migration notes). Module-level vel_hist state is shared
+-- see Sniper/PREDICTION_LIB_MIGRATION.md). Module-level vel_hist state is shared
 -- across all consumers via Lua's require-cache; call SampleVelocities once per
 -- tick from a consumer's OnUpdateEx.
 ----------------------------------------------------------------------------
@@ -212,14 +212,14 @@ function Geometry.BestAoeCenter(units, radius, lead_s, must_cover)
         for i = 1, #preds do
             local d = anchor:Distance2D(preds[i])
             if d > 1 and d <= 2 * radius then
-                -- MIDPOINT placement (anchor..pred). For d <= 2*radius the midpoint
-                -- sits d/2 <= radius from BOTH, so the anchor stays covered and the
-                -- far unit is INSIDE the radius with margin (d/2). Robust vs the old
-                -- rim placement (off = d - radius put the far unit at exactly `radius`,
-                -- which floating-point could round just outside, collapsing a catchable
-                -- pair to single-target -- a cover-both demo logged d=482 -> covered=1).
-                -- Generated FIRST so it wins coverage ties over the rim candidate,
-                -- which is kept so coverage never regresses for 3+.
+                -- v0.5.175: MIDPOINT placement (anchor..pred). For d <= 2*radius the
+                -- midpoint sits d/2 <= radius from BOTH, so the anchor stays covered
+                -- and the far unit is INSIDE the radius with margin (d/2). Robust vs
+                -- the old rim placement (off = d - radius put the far unit at exactly
+                -- `radius`, which floating-point could round just outside, collapsing
+                -- a catchable pair to single-target -- the Lina w_aim demo logged
+                -- d=482 -> covered=1). Generated FIRST so it wins coverage ties over
+                -- the rim candidate, which is kept so coverage never regresses for 3+.
                 cand[#cand + 1] = Vector((anchor.x + preds[i].x) * 0.5,
                                          (anchor.y + preds[i].y) * 0.5, anchor.z)
                 local off = d - radius; if off < 0 then off = 0 end  -- in [0, radius]
@@ -324,6 +324,49 @@ function Geometry.BestLineAim(units, source, half_width, length, lead_s, must_co
         return nil, 0
     end
     return Vector(sx + best_ux * length, sy + best_uy * length, sz), best_n or 0
+end
+
+---Closest reachable landing INSIDE a teleport reach-disc to a target. An anchor's reach is a disc
+---(centre + radius r): the teleport may drop us anywhere within r of the centre, so the point closest to
+---`target` is the target itself when it lies inside the disc, else the disc EDGE along centre->target.
+---Pure scalar (offline-testable). Shared model for Keen Conveyance (structures now, creeps later) AND
+---Boots of Travel, which teleport the same way.
+---@param cx number @param cy number  disc centre
+---@param r number   reach radius
+---@param tx number @param ty number  target
+---@return number lx @return number ly  the landing point
+---@return number residual  distance from the landing to the target (0 when the target is inside the disc)
+function Geometry.DiscReachPoint(cx, cy, r, tx, ty)
+    local dx, dy = tx - cx, ty - cy
+    local d = math.sqrt(dx * dx + dy * dy)
+    if d <= (r or 0) or d < 1e-9 then return tx, ty, 0 end     -- target inside reach -> land ON it
+    local k = r / d
+    return cx + dx * k, cy + dy * k, d - r
+end
+
+---Best teleport landing among a set of reach discs: the landing NEAREST the target whose point passes an
+---optional `accept` filter. Each anchor = { pos = {x,y}, r = <reach>, ... }. The hero supplies
+---`accept(lx, ly, anchor) -> bool` for engine-dependent checks (walkable / safe / creep-free), so this
+---stays pure. A rejected (nearer) landing never blocks a farther accepted one. Returns nil if none pass.
+---SAME picker for structure anchors now and creep/BoT anchors later - only the anchor list + accept differ.
+---@param anchors table array of { pos = {x,y}, r = number }
+---@param target table { x, y }
+---@param opts table|nil { accept = function(lx,ly,anchor)->bool }
+---@return table|nil { anchor, lx, ly, residual }
+function Geometry.BestReachLanding(anchors, target, opts)
+    if not (anchors and target) then return nil end
+    local accept = opts and opts.accept
+    local best, bestres = nil, math.huge
+    for i = 1, #anchors do
+        local a = anchors[i]
+        if a and a.pos and a.r then
+            local lx, ly, residual = Geometry.DiscReachPoint(a.pos.x, a.pos.y, a.r, target.x, target.y)
+            if residual < bestres and (not accept or accept(lx, ly, a)) then
+                best, bestres = { anchor = a, lx = lx, ly = ly, residual = residual }, residual
+            end
+        end
+    end
+    return best
 end
 
 return Geometry

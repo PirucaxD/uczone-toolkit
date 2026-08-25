@@ -10,7 +10,9 @@ that return positions, scores, or booleans; the hero script decides what to
 do with them. The few stateful harnesses (the turn-then-fire and
 re-issue-while-airborne tickers) keep their state in a caller-owned `pending`
 struct and reach the engine through a `cfg` callback bundle, so the lib never
-imports a hero's wrappers directly.
+imports a hero's wrappers directly. The other stateful resident is
+`Escape.Vision`, the shared enemy last-seen tracker absorbed from the old
+vision lib; it gets its own section below.
 
 ## Danger scoring
 
@@ -83,20 +85,82 @@ back through these so it stays free of any specific hero's wrappers.
 | `QueueSafePostMove(me, intent, push_dist, threat_caster, modifier_name, moves_during_airborne, cfg)` | `pending` to stash, `nil` if no safe destination |
 | `PostAirborneMoveTick(me, pending, cfg)` | updated `pending` (`nil` once arrived / expired / dead) |
 
+## Vision: the shared last-seen tracker (`Escape.Vision`)
+
+The absorbed vision lib mounts here as `Escape.Vision`. It answers the one
+question no engine API answers: how long ago was this enemy hero last visible?
+
+Why it has to exist: `Hero.GetLastVisibleTime` is dead. It is documented
+nilable, and measured nil on 405 of 405 fogged reads across all five enemy
+heroes in one full match, so any fog-age model built on it is inert. And
+`FogOfWar.IsPointVisible` answers "is this POINT visible now", not "when did I
+last see this hero". So the timestamp gets built by hand: an `OnSetDormant`
+handler stamps the moment a hero entity leaves vision, and `Age` reads it back.
+
+Wire it with `Vision.Wire(callbacks)`: it chains the handler onto your
+callbacks table's `OnSetDormant`, preserving any handler already there, and is
+idempotent per table (wiring the same table twice never double-fires). The
+`type` argument the engine passes is recorded for diagnostics but never
+trusted for logic; the documented `Entity.IsDormant` decides whether the
+entity actually went dormant. Creeps are ignored (heroes only; creeps fog
+constantly).
+
+`Age(e)` returns 0 for a currently visible hero, seconds-since-fogged for a
+dormant one, and nil for a hero it never observed. nil is the safety valve:
+consumers apply their own default, and `FogSnapshot`'s existing `or 0` turns
+nil into "fresh visible", byte-for-byte the pre-tracker behavior, so an empty
+tracker (say `OnSetDormant` never fires on some engine build) changes nothing
+anywhere. `Stats()` reports `{ tracked, events, types }`; `events` staying 0
+in a real game is the tell that the callback never fires and the whole
+facility is inert.
+
+Two design points worth copying. First, the tracker owns its clock: both the
+stamp and the age read come from the same internal monotonic clock
+(`GlobalVars.GetCurTime`, falling back to `GameRules.GetGameTime`). A
+caller-supplied clock is exactly how ages go silently negative (mixing the
+on-screen `GetDOTATime` against an engine-clock timestamp) and clamp to 0
+forever; owning the clock makes that class of bug structurally impossible.
+Second, the state lives in an anchored store, not module locals: the shared
+tables sit under a `package.loaded` pseudo-key, so they survive a re-require.
+Hero scripts commonly cache-clear lib modules at load; with plain module
+locals each hero would fork an empty tracker, only the last-wired instance
+would stamp, and the others would read eternally-empty fog ages with every
+gate green. The anchor is `package.loaded` rather than `_G` because the
+scripting sandbox does not expose `_G`. Known ceiling: the store also survives
+across matches in one client session, so a recycled entity handle can inherit
+a stale stamp (a very large age); consumers with an age cap simply skip such
+ghosts.
+
+| Function | Returns |
+|----------|---------|
+| `Vision.Age(e)` | `0` when visible now; seconds since last seen; `nil` when never observed |
+| `Vision.LastSeen(e)` | the raw stamp (monotonic seconds), diagnostics only |
+| `Vision.Stats()` | `{ tracked, events, types }` probe counters |
+| `Vision.Init()` | idempotent init, mirrors the other libs' Init contract |
+| `Vision.Wire(callbacks)` | chains the dormancy handler onto `callbacks.OnSetDormant`, idempotent per table |
+
 ## Fog and gank awareness
 
 `FogSnapshot` builds the shared per-call enemy roster: every living enemy hero,
 visible or fogged. Visible enemies carry their true origin (`age = 0`); fogged
 enemies carry their last-known position plus a `probable_radius` that grows with
 time-since-seen (capped at 700 MS, 30s age) to model where they could have
-moved. Pass the returned snapshot as `opts.snapshot` to the consumers below so
-several checks in one frame share a single scan instead of each rescanning.
+moved. The time-since-seen comes from the `Escape.Vision` tracker above (its
+nil collapses to 0 here). Pass the returned snapshot as `opts.snapshot` to the
+consumers below so several checks in one frame share a single scan instead of
+each rescanning.
 
 `NearbyEnemiesIncludingFog` counts enemies whose current possible position could
 reach within a radius of a point. `AdvanceRiskScore` turns that into a composite
 score (visible enemies weighted by closeness, fog enemies half-weighted for
 uncertainty); the suggested read is `<= 30` safe, `30-60` risky, `> 60` abort,
 but the caller picks the threshold.
+
+`ReachableFog` is the tighter fog count: only enemies fogged within `fresh_s`
+seconds count, and each one's probable-disc reach is capped at `reach_cap`, so
+a stale blip's huge disc is rejected rather than trusted. `MissingCount` counts
+the fogged (alive but not visible) enemies in a snapshot, the classic "how many
+are missing before I take a deep camp" lever.
 
 `PossibleGankers` and `GankImminent` answer "who can reach this spot within N
 seconds", `MissingFromMap` lists enemies off the minimap longest-first, and
@@ -136,6 +200,8 @@ end
 |----------|---------|
 | `FogSnapshot(me, opts)` | `{ t, heroes = {{entity, pos, age, probable_radius, visible}} }` for all living enemies |
 | `NearbyEnemiesIncludingFog(me, pos, radius, opts)` | `(visible_count, fog_count, list)` of enemies that could reach near `pos` |
+| `ReachableFog(snapshot, pos, opts)` | count of fresh-fogged enemies whose capped disc reaches within `radius` of `pos`; `opts` = `{ radius? (1000), reach_cap? (450), fresh_s? (1.5) }` |
+| `MissingCount(snapshot)` | count of fogged (alive, not visible) enemies in the snapshot |
 | `AdvanceRiskScore(me, landing, opts)` | `(score, breakdown)` composite danger at `landing` (lower = safer) |
 | `PossibleGankers(me, pos, eta_s, opts)` | `{ gankers = {{entity, eta_seconds, dist, visibility, age}}, summary }` sorted by ETA |
 | `GankImminent(me, pos, eta_s, min_count, opts)` | `(imminent, gankers)`: are `>= min_count` (default 2) enemies arrivable within `eta_s` |
@@ -219,3 +285,38 @@ end
 |----------|---------|
 | `ChaseWindow(me_pos, target_pos, vel, opts)` | `{ catch_eta, escape_eta, intercept, reason }`, `nil` on missing args or zero `fly_speed` |
 | `CutoffLock(me_pos, intercept, walk_path, opts)` | `{ locked, walk, straight, ratio }`: is the straight flight a worthwhile shortcut over the walk |
+
+## Calibration and diagnostics helpers
+
+`CommitWiden` turns commit-time exposure into a danger-radius widening
+distance: `approach_speed * (travel_s + stand_s)`, clamped to `[0, widen_max]`.
+The caller supplies the travel time it already computed, so there is no
+division anywhere in the function and no way for a 0/0 or NaN to be born here.
+`approach_speed <= 0` returns 0 (a no-code-edit kill switch), and a negative or
+NaN cap is sanitised to 0: a negative widen would SHRINK every danger radius
+and make the bot blind rather than cautious, silently and exactly backwards.
+The clamp is `min(cap, max(0, w))` in that exact order so a NaN exposure lands
+on 0, not on the cap.
+
+`NearestEnemyEdge` reports the nearest enemy EDGE distance to a point, using
+the same edge rule as `FogProximityRisk` (visible = plain distance; fogged =
+distance minus the age disc, floored at 0). It is an instrument, never a gate:
+`FogProximityRisk` returns exactly 0 for everything past its radius, so a
+logged risk of 0.00 cannot distinguish "widen too small" from "nobody there",
+and this field fills that calibration hole. It returns `math.huge` on an empty
+snapshot so "no enemies" is distinguishable from "enemy at 0u", and it
+deliberately carries no age cap: it reports geometry, the risk kernel decides
+what geometry is worth. Component math on `.x` / `.y`, so plain `{x, y}`
+tables work as well as engine Vectors.
+
+`DiagGate` is a keyed throttle for diagnostic log lines: it returns `true`
+when the caller should emit, and stamps only then. Distinct keys never starve
+each other (a single shared stamp would alias to whichever call site runs
+first), and a backwards clock emits rather than suppresses: an instrument's
+failure direction must be noisy, never silent.
+
+| Function | Returns |
+|----------|---------|
+| `CommitWiden(travel_s, stand_s, approach_speed, widen_max)` | widening distance in units, always finite and `>= 0`; `nil` cap = uncapped, `0` = zero widen |
+| `NearestEnemyEdge(snap, pt, opts)` | nearest enemy edge distance to `pt`, `math.huge` when there is nobody to measure; `opts` = `{ fog_ms? (default 550) }` |
+| `DiagGate(stamps, key, t, window)` | `true` when the keyed diagnostic should emit (and stamps it), `false` inside the window |

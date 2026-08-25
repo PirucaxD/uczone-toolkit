@@ -5,7 +5,7 @@ pure helpers, no API calls and no callbacks. Pike's push is the same distance
 for everyone and Bane Nightmare is beaten by invuln/dispel regardless of who
 is defending, so this knowledge does not belong per-hero.
 
-It is the backing data for [save_select](save_select.md), but you can read it
+It is the backing data for [defense](defense.md), but you can read it
 directly too. The whole module is returned as one `ThreatData` table.
 
 ## The counter axis
