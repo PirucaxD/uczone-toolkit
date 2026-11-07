@@ -100,10 +100,10 @@ handler stamps the moment a hero entity leaves vision, and `Age` reads it back.
 Wire it with `Vision.Wire(callbacks)`: it chains the handler onto your
 callbacks table's `OnSetDormant`, preserving any handler already there, and is
 idempotent per table (wiring the same table twice never double-fires). The
-`type` argument the engine passes is recorded for diagnostics but never
-trusted for logic; the documented `Entity.IsDormant` decides whether the
-entity actually went dormant. Creeps are ignored (heroes only; creeps fog
-constantly).
+`type` argument is the documented `Enum.DormancyType` and it decides: 1
+(`ENTITY_DORMANT`) stamps. `Entity.IsDormant` is only recorded, because it
+reads false inside the callback (the engine sets the flag afterwards).
+Creeps are ignored (heroes only; creeps fog constantly).
 
 `Age(e)` returns 0 for a currently visible hero, seconds-since-fogged for a
 dormant one, and nil for a hero it never observed. nil is the safety valve:

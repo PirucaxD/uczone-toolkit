@@ -63,7 +63,7 @@ Map._nearest       = _nearest
 
 -- ---- camps (R1 occupancy) ------------------------------------------------
 
----Center of a camp (box midpoint).
+---Center of a camp (box midpoint), or nil when the camp has no box.
 function Map.CampCenter(camp)
     return _center_of_box(Camp.GetCampBox(camp))
 end
@@ -75,10 +75,14 @@ function Map.CampKey(c)
 end
 
 local function _camp_desc(c)
-    return { camp = c, center = Map.CampCenter(c), type = Camp.GetType(c), box = Camp.GetCampBox(c) }
+    local box = Camp.GetCampBox(c)          -- documented `{min,max} | nil` (UCZone docs 2026-11-06)
+    local center = _center_of_box(box)
+    if not center then return nil end
+    return { camp = c, center = center, type = Camp.GetType(c), box = box }
 end
 
----All neutral camps as descriptors { camp, center, type, box }.
+---All neutral camps that have a box, as descriptors { camp, center, type, box }; center and box
+---are never nil. ponytail: `out[#out + 1] = nil` is a no-op, so a box-less camp simply drops out.
 function Map.Camps()
     local out = {}
     for _, c in ipairs(Camps.GetAll() or {}) do out[#out + 1] = _camp_desc(c) end

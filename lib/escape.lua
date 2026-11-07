@@ -137,13 +137,13 @@ local function clock()
 end
 
 ---OnSetDormant handler. The signature is `(npc, type)` where `type` is an
----`Enum.DormancyType` the docs describe only as "the type of change" - they do NOT say
----which value means ENTERING dormancy, nor whether the callback fires for enemy heroes at
----all. So `type` is RECORDED but never trusted for logic; the documented
----`Entity.IsDormant` decides. This codebase has been burned three times by assuming API
----semantics (NPC.GetAttackDamage, Ability.GetCooldownTimeRemaining,
----NPC.GetModifierRemaining), so the recorded values teach us the enum from a real log
----instead of a guess.
+---`Enum.DormancyType`, documented in the 2026-11-06 docs: ENTITY_NOT_DORMANT 0, ENTITY_DORMANT 1,
+---ENTITY_SUSPENDED 2. The stamp gate is dtype 1 (entering dormancy), which a recorded
+---log had already derived (73 windows, zero contradictions). `Entity.IsDormant` is
+---recorded for diagnostics only: it reads false INSIDE this callback because the engine
+---applies the flag after it, so an IsDormant gate never stamps. This codebase has been
+---burned by assuming API semantics (NPC.GetAttackDamage, Ability.GetCooldownTimeRemaining,
+---NPC.GetModifierRemaining); the recorded types counter stays as the tripwire.
 ---@param npc userdata
 ---@param dtype any
 function Vision.OnSetDormant_handler(npc, dtype)
@@ -162,7 +162,7 @@ function Vision.OnSetDormant_handler(npc, dtype)
     if Entity and Entity.IsDormant then dorm = Entity.IsDormant(npc) end
     local k = tostring(dtype) .. "/" .. tostring(dorm)
     types[k] = (types[k] or 0) + 1
-    if dorm then
+    if tostring(dtype) == "1" then      -- Enum.DormancyType.ENTITY_DORMANT; tostring also accepts a string dtype
         last_seen[npc] = clock()        -- the moment it left vision IS the last-seen time
     end
 end

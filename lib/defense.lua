@@ -1210,7 +1210,7 @@ function Dispatcher:HandleLineProjectile(data, opts)
     -- The v0.5.147 demo showed only mirana/magnus reached line_projectile_seen,
     -- but the skip reasons are level-3 (hidden if verbosity dropped < 3), so
     -- absence of a log was NOT proof the callback never fired. This logs EVERY
-    -- invocation + raw src at level 1 (rare event -- the demo had ~4 total).
+    -- invocation + raw src + pn (data.name: names a fogged cast, source is optional) at level 1.
     -- Remove once the hook-detection question is settled.
     do
         local s = data and data.source
@@ -1218,7 +1218,7 @@ function Dispatcher:HandleLineProjectile(data, opts)
         if s and Entity.IsEntity(s) and Entity.IsNPC and Entity.IsNPC(s) then
             sn = (opts and opts.uname and opts.uname(s)) or "?"
         end
-        c.tlog(1, "olpc_entered", { src = sn })
+        c.tlog(1, "olpc_entered", { src = sn, pn = data and data.name or "?" })
     end
     if not me or not data then
         if tl3 then c.tlog(3, "projectile_skip", { reason = "no_self_or_data" }) end
