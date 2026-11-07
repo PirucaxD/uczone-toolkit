@@ -151,7 +151,7 @@ function Vision.OnSetDormant_handler(npc, dtype)
     if NPC and NPC.IsHero and not NPC.IsHero(npc) then return end   -- heroes only: creeps fog constantly
     _vstore.events = _vstore.events + 1
     -- v0.1.355 DIAGNOSTIC (log-only, zero behaviour): g354 measured events=584 but tracked=0,
-    -- so this gate was falsy on every single call while the SAME `Entity.IsDormant` reported
+    -- so the old if-dorm gate was falsy on every call while the SAME `Entity.IsDormant` reported
     -- fog=1..3 on the same probe line for handles out of `Heroes.GetAll`. The gitbook types
     -- them differently - `Entity.IsDormant(entity: CEntity)` vs `OnSetDormant(npc: CNPC)` - so
     -- the open question is whether the call is REJECTED (returns nil) or genuinely reads
