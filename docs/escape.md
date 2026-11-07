@@ -156,6 +156,13 @@ score (visible enemies weighted by closeness, fog enemies half-weighted for
 uncertainty); the suggested read is `<= 30` safe, `30-60` risky, `> 60` abort,
 but the caller picks the threshold.
 
+`NearbyEnemiesIncludingFog` and `PossibleGankers` (and so `AdvanceRiskScore` and
+`GankImminent`, which pass their `opts` through) take an opt-in `age_cap`: a
+fogged enemy older than `age_cap` seconds counts with age 0, from its last-seen
+spot with a zero disc and no head start, instead of a huge stale disc. `nil` (the
+default) keeps the old behavior; visible enemies are untouched. `MissingFromMap`
+ignores it.
+
 `ReachableFog` is the tighter fog count: only enemies fogged within `fresh_s`
 seconds count, and each one's probable-disc reach is capped at `reach_cap`, so
 a stale blip's huge disc is rejected rather than trusted. `MissingCount` counts
