@@ -5,11 +5,11 @@
 ---states. Replaces `Target.WillBeInvulnIn` v1, which read currently-active
 ---state durations only.
 ---
----**Pure helpers** - no game-state mutation. Callers feed in:
+---**Pure helpers** - no game-state mutation. WillBeInvulnIn / EscapeReadiness take:
 ---  - The target entity.
 ---  - A look-ahead window in seconds.
----Returns one of `"safe"` / `"will_be_invuln"` / `"likely_dispel"` /
----`"now"` (already in the state).
+---Returns: `WillBeInvulnIn` -> (boolean, "now" | "state_active" | item name | nil);
+---`EscapeReadiness` -> 0..1; `ArrivalWatchdog` -> "hold" | "release", why, over.
 ---
 ---v1 covers the most common 7.41C cases. Add ability/modifier names as
 ---new heroes ship.
@@ -60,14 +60,14 @@ function Timing.WillBeInvulnIn(entity, window_seconds)
     if not entity or not Entity.IsNPC(entity) then return false, nil end
     if Timing.IsInvulnNow(entity) then return true, "now" end
 
-    -- Read ALL state durations once; many states return a positive number
-    -- when the entity is currently subject to a debuff/buff.
-    local d_invuln = NPC.GetStatesDuration and
-        NPC.GetStatesDuration(entity, MS.MODIFIER_STATE_INVULNERABLE) or 0
-    local d_oog    = NPC.GetStatesDuration and
-        NPC.GetStatesDuration(entity, MS.MODIFIER_STATE_OUT_OF_GAME) or 0
-    local d_mi     = NPC.GetStatesDuration and
-        NPC.GetStatesDuration(entity, MS.MODIFIER_STATE_MAGIC_IMMUNE) or 0
+    -- One call: the states are table KEYS and the result is keyed the same way (npc.md,
+    -- UCZone API docs 2026-11-06). An absent state may read nil or 0, hence `or 0`.
+    local d = NPC.GetStatesDuration and NPC.GetStatesDuration(entity, {
+        [MS.MODIFIER_STATE_INVULNERABLE] = true, [MS.MODIFIER_STATE_OUT_OF_GAME] = true,
+        [MS.MODIFIER_STATE_MAGIC_IMMUNE] = true }) or {}
+    local d_invuln = d[MS.MODIFIER_STATE_INVULNERABLE] or 0
+    local d_oog    = d[MS.MODIFIER_STATE_OUT_OF_GAME] or 0
+    local d_mi     = d[MS.MODIFIER_STATE_MAGIC_IMMUNE] or 0
     if d_invuln > 0 or d_oog > 0 or d_mi > 0 then
         return true, "state_active"
     end

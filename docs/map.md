@@ -17,11 +17,14 @@ Hammer units, and box / nearest math uses only the x / y of each position.
 A camp descriptor is the table `{ camp, center, type, box }`, where `center` is the
 box midpoint and `box` is the engine AABB `{ min, max }`.
 
-`CampCenter(camp)` returns the box midpoint Vector of one camp.
+`CampCenter(camp)` returns the box midpoint Vector of one camp, or nil when the
+camp has no box.
 
-`Camps()` returns a descriptor for every neutral camp on the map.
+`Camps()` returns a descriptor for every neutral camp that has a box
+(`Camp.GetCampBox` can return nil); `center` and `box` are never nil.
 
-`CampsInRadius(pos, r)` returns descriptors for camps within `r` of `pos`.
+`CampsInRadius(pos, r)` returns descriptors for camps within `r` of `pos`,
+skipping box-less camps the same way.
 
 `AllNeutrals()` returns every live, non-dormant, non-spawning neutral creep on the
 map as a flat list. Enumerate this once, then box-filter per camp, rather than

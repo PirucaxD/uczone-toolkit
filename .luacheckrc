@@ -19,7 +19,7 @@ max_line_length = false        -- the trailing LOG:info banner line is huge by d
 read_globals = {
   "Entity", "NPC", "NPCs", "Ability", "Item", "Hero", "Heroes", "Modifier",
   "Vector", "Enum", "GridNav", "GlobalVars", "Humanizer", "Order", "Menu",
-  "LOG", "GameRules", "Players", "Player", "Engine", "Renderer", "Input",
+  "LOG", "GameRules", "Players", "Player", "Engine", "Render", "Input",
   "Damage", "Physics", "Particle", "Sound", "Cursor", "Camera", "Tree", "Trees",
   "Unit", "Units", "Buildings", "Convars", "Time",
 }

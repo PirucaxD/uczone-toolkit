@@ -24,7 +24,7 @@ NPC.HasModifier      = function() return false end
 NPC.HasState         = function() return false end
 NPC.GetItem          = function() return nil end
 NPC.GetMana          = function() return 100 end
-NPC.GetStatesDuration= function() return 0 end
+NPC.GetStatesDuration= function(_, states) local r = {} for s in pairs(states) do r[s] = 0 end return r end  -- docs: keyed set in, keyed table out
 NPC.IsRunning        = function() return false end
 NPC.IsAttacking      = function() return false end
 NPC.GetAttackRange   = function() return 550 end
@@ -266,6 +266,25 @@ describe("lib/timing - EscapeReadiness", function()
     it("returns 0 for entity without items", function()
         local r = Timing.EscapeReadiness({ idx = 1 }, 2.0)
         assert_eq(r, 0)
+    end)
+end)
+
+describe("lib/timing - WillBeInvulnIn reads GetStatesDuration as a keyed set (API docs 2026-11-06)", function()
+    it("each requested state is read; an all-absent (sparse) result is not state_active", function()
+        local saved, MSx = NPC.GetStatesDuration, Enum.ModifierState
+        local function hit_with(active)   -- sparse result: only `active`, and only if it was requested
+            NPC.GetStatesDuration = function(_, states) return { [active] = states[active] and 2.0 or nil } end
+            local ok, hit, why = pcall(Timing.WillBeInvulnIn, { idx = 1 }, 1.0)
+            NPC.GetStatesDuration = saved
+            assert_true(ok, "WillBeInvulnIn raised: " .. tostring(hit))
+            return hit, why
+        end
+        for _, st in ipairs({ MSx.MODIFIER_STATE_INVULNERABLE, MSx.MODIFIER_STATE_OUT_OF_GAME,
+                              MSx.MODIFIER_STATE_MAGIC_IMMUNE }) do
+            local hit, why = hit_with(st)
+            assert_true(hit, tostring(st) .. " must be read"); assert_eq(why, "state_active")
+        end
+        assert_false(hit_with("NONE"), "no active state must not read as state_active")
     end)
 end)
 
@@ -3863,16 +3882,28 @@ describe("lib/escape.Vision -- shared last-seen tracker (v0.1.354; absorbed at v
         assert_true(Vision.Age(CREEP) == nil, "a creep must never be tracked")
     end)
 
-    it("the handler follows Entity.IsDormant, NOT the undocumented type enum", function()
-        -- OnSetDormant's `type` is an Enum.DormancyType the docs describe only as "the type
-        -- of change"; nothing states which value means entering dormancy. A nonsense type
-        -- must still stamp when IsDormant says dormant.
-        local d = { [HERO] = true }
-        with_engine(d); at(50)
-        Vision.OnSetDormant_handler(HERO, 999)
+    it("the dtype is the gate: an unknown value is recorded but never trusted", function()
+        local U999 = { id = "unknown_dtype" }
+        with_engine({ [U999] = true }); at(50)
+        Vision.OnSetDormant_handler(U999, 999)
         at(55)
+        assert_true(Vision.Age(U999) == nil, "an unknown dtype must never stamp; got " .. tostring(Vision.Age(U999)))
+        assert_true(Vision.Stats().types["999/true"] ~= nil, "the probe must still record the 999/true key")
+    end)
+
+    it("dtype 1 (ENTITY_DORMANT) stamps although Entity.IsDormant reads false in the callback", function()
+        with_engine({}); at(200)                     -- handler time: the engine has not set the flag yet
+        Vision.OnSetDormant_handler(HERO, 1)
+        with_engine({ [HERO] = true }); at(204)      -- read time: dormant
         local a = Vision.Age(HERO)
-        assert_true(a ~= nil and math.abs(a - 5.0) < 1e-6, "IsDormant decides, not type; got " .. tostring(a))
+        assert_true(a ~= nil and math.abs(a - 4.0) < 1e-6, "expected 4.0, got " .. tostring(a))
+    end)
+
+    it("dtype 0 (ENTITY_NOT_DORMANT) never stamps", function()
+        local LEAVER = { id = "leaver" }
+        with_engine({ [LEAVER] = true }); at(300)
+        Vision.OnSetDormant_handler(LEAVER, 0)
+        assert_true(Vision.Age(LEAVER) == nil, "dtype 0 must not stamp")
     end)
 
     it("Wire chains onto an existing handler and is idempotent per table", function()
@@ -5373,6 +5404,23 @@ describe("lib/map -- pure helpers", function()
         assert_true(Map._center_of_box(nil) == nil)
         assert_true(Map._center_of_box({}) == nil)
         assert_true(Map._center_of_box({ min = { x = 0 } }) == nil)
+    end)
+
+    it("Camps skips a camp whose GetCampBox is nil (documented | nil in the 2026-11-06 docs)", function()
+        local saved_camps, saved_camp = Camps, Camp
+        Camps = { GetAll = function() return { "boxless", "boxed" } end }   -- dropped camp FIRST: proves no hole
+        Camp  = { GetType = function() return 0 end,
+                  GetCampBox = function(c)
+                      if c == "boxed" then return { min = { x = 0, y = 0 }, max = { x = 100, y = 200 } } end
+                  end }
+        local ok, out = pcall(Map.Camps)
+        Camps, Camp = saved_camps, saved_camp
+        assert_true(ok, "Map.Camps raised: " .. tostring(out))
+        assert_eq(#out, 1, "the box-less camp must be skipped")
+        assert_eq(out[1].camp, "boxed")
+        assert_eq(out[1].center.x, 50)
+        assert_eq(out[1].center.y, 100)
+        assert_true(out[1].box ~= nil, "a descriptor's box is never nil")
     end)
 
     it("_in_box_xy: inside returns true", function()
