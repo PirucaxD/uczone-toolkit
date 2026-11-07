@@ -2739,6 +2739,28 @@ describe("lib/escape - NearestEnemyEdge (commit risk v2, group D)", function()
             end
         end
     end)
+
+    it("D5 opts.age_cap drops STALE ghosts entirely (the kernel's drop rule)", function()
+        -- Once Vision is wired h.age is real; without a cap a 30s ghost's disc (16500u)
+        -- zeroes the edge from anywhere (tinker g404/g405: ne= p50 collapsed 1400 -> 0).
+        -- With the cap, a ghost STALER than age_cap stops pricing, exactly like
+        -- FogProximityRisk; fresher ghosts keep the exact D2 shrink; visible enemies
+        -- are never dropped; nil keeps the old uncapped behaviour.
+        local snap = { heroes = {
+            { pos = P(2000, 0), age = 0,  visible = true },     -- visible at 2000
+            { pos = P(1000, 0), age = 10, visible = false },    -- stale ghost: dropped under cap 5
+        } }
+        assert_eq(NEE(snap, P(0, 0), { age_cap = 5 }), 2000, "the stale ghost must not price")
+        assert_eq(NEE(snap, P(0, 0)), 0, "nil age_cap keeps the old uncapped behaviour")
+        local fresh = { heroes = { { pos = P(2000, 0), age = 3, visible = false } } }
+        assert_eq(NEE(fresh, P(0, 0), { age_cap = 5 }), 2000 - 3 * 550, "fresh-fog shrink unchanged")
+        local edge = { heroes = { { pos = P(3000, 0), age = 5, visible = false } } }
+        assert_eq(NEE(edge, P(0, 0), { age_cap = 5 }), 3000 - 5 * 550, "age == age_cap still prices (kernel keeps age <= cap)")
+        local vis_old = { heroes = { { pos = P(700, 0), age = 40, visible = true } } }
+        assert_eq(NEE(vis_old, P(0, 0), { age_cap = 5 }), 700, "a VISIBLE hero is never dropped whatever its age field says")
+        local only_ghost = { heroes = { { pos = P(1000, 0), age = 10, visible = false } } }
+        assert_eq(NEE(only_ghost, P(0, 0), { age_cap = 5 }), math.huge, "dropped-everything is the math.huge sentinel")
+    end)
 end)
 
 local HV = require("lib.hero_value")
