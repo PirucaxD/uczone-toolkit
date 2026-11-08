@@ -322,10 +322,19 @@ distance minus the age disc, floored at 0). It is an instrument, never a gate:
 `FogProximityRisk` returns exactly 0 for everything past its radius, so a
 logged risk of 0.00 cannot distinguish "widen too small" from "nobody there",
 and this field fills that calibration hole. It returns `math.huge` on an empty
-snapshot so "no enemies" is distinguishable from "enemy at 0u", and it
-deliberately carries no age cap: it reports geometry, the risk kernel decides
-what geometry is worth. Component math on `.x` / `.y`, so plain `{x, y}`
-tables work as well as engine Vectors.
+snapshot so "no enemies" is distinguishable from "enemy at 0u". Component
+math on `.x` / `.y`, so plain `{x, y}` tables work as well as engine Vectors.
+
+By default (`opts.age_cap` nil) it carries no age cap, the original
+behaviour. That only reads well while every fogged row has age 0, i.e. before
+`Escape.Vision` is wired. Once Vision is wired the ages are real, and an
+uncapped stale ghost's disc (`age * fog_ms`, 16500u for a 30s ghost) covers
+the point from anywhere and zeroes the edge: tinker measured its `ne=` p50
+collapsing from ~1400 to 0. So if you wire Vision, pass `age_cap` (use the
+same value you give `FogProximityRisk`, whose default is 5): a fogged enemy
+older than `age_cap` is then dropped entirely, the kernel's own drop rule,
+fresher ghosts keep the normal disc shrink, and visible enemies are never
+dropped. If the cap drops every enemy the result is still `math.huge`.
 
 `DiagGate` is a keyed throttle for diagnostic log lines: it returns `true`
 when the caller should emit, and stamps only then. Distinct keys never starve
@@ -336,5 +345,5 @@ failure direction must be noisy, never silent.
 | Function | Returns |
 |----------|---------|
 | `CommitWiden(travel_s, stand_s, approach_speed, widen_max)` | widening distance in units, always finite and `>= 0`; `nil` cap = uncapped, `0` = zero widen |
-| `NearestEnemyEdge(snap, pt, opts)` | nearest enemy edge distance to `pt`, `math.huge` when there is nobody to measure; `opts` = `{ fog_ms? (default 550) }` |
+| `NearestEnemyEdge(snap, pt, opts)` | nearest enemy edge distance to `pt`, `math.huge` when there is nobody to measure; `opts` = `{ fog_ms? (default 550), age_cap? (default nil = uncapped; set it once Vision is wired) }` |
 | `DiagGate(stamps, key, t, window)` | `true` when the keyed diagnostic should emit (and stamps it), `false` inside the window |

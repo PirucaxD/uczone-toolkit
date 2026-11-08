@@ -1548,11 +1548,12 @@ end
 ---strict worst case instead of a distribution. Returns math.huge on an empty
 ---snapshot so "no enemies" is distinguishable from "enemy at 0u".
 ---
----Deliberately carries NO age_cap gate, unlike the risk kernel at :897: the
----kernel drops a stale ghost because it refuses to SCORE it, but an
----instrument that drops the same ghost logs ne=inf next to r1=0.00 and the
----calibration hole this field exists to fill reopens. It reports geometry,
----the kernel decides what geometry is worth.
+---The DEFAULT (opts.age_cap nil) carries no age gate. That was written when Vision
+---never stamped and every fogged row read age 0; with Vision wired the ages are real
+---and the uncapped shrink zeroes the edge from stale ghosts (tinker g404/g405: ne= p50
+---1400 -> 0). Pass opts.age_cap (the kernel's own age_cap, default 5 there) to opt
+---INTO FogProximityRisk's drop rule and restore kernel agreement (tests D4/D5). A
+---dropped-everything snapshot still returns math.huge, the "no enemies" sentinel.
 ---
 ---Component math on .x/.y, never pt:Distance2D: pt crosses the hero->lib
 ---boundary and callers pass plain {x,y} tables as well as engine Vectors
@@ -1560,16 +1561,23 @@ end
 ---FogProximityRisk's local d2 at :890 and ReachableFog at :784.
 ---@param snap table|nil FogSnapshot result { heroes = {{pos, age, visible}} }
 ---@param pt table|nil {x, y} plain table or engine Vector
----@param opts table|nil {fog_ms=550} disc-growth rate, matches FogProximityRisk
+---@param opts table|nil {fog_ms=550, age_cap=nil} disc-growth rate and stale-ghost cap, match FogProximityRisk
 ---@return number edge distance in units, math.huge when there is nobody to measure
 function Escape.NearestEnemyEdge(snap, pt, opts)
     local hs = snap and snap.heroes
     if not (hs and pt) then return math.huge end
     local fog_ms = (opts and opts.fog_ms) or 550
+    -- opts.age_cap (nil = the uncapped default, back-compatible): once Vision is wired
+    -- h.age is REAL, and the uncapped shrink zeroes the edge for any ghost older than
+    -- ~ d / fog_ms (tinker g404/g405: the ne= p50 collapsed from ~1400 to 0, a phantom
+    -- enemy at touch range on most commits). With a cap, a ghost STALER than age_cap
+    -- stops pricing entirely (the same rule as FogProximityRisk's kernel drop); the
+    -- fresh-fog shrink is unchanged.
+    local age_cap = opts and opts.age_cap
     local best = math.huge
     for i = 1, #hs do
         local h = hs[i]
-        if h and h.pos then
+        if h and h.pos and not (age_cap and not h.visible and (h.age or 0) > age_cap) then
             local dx, dy = (h.pos.x or 0) - (pt.x or 0), (h.pos.y or 0) - (pt.y or 0)
             local edge = math.sqrt(dx * dx + dy * dy)
             if not h.visible then
