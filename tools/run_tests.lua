@@ -2741,6 +2741,96 @@ describe("lib/escape - NearestEnemyEdge (commit risk v2, group D)", function()
     end)
 end)
 
+describe("lib/escape - age_cap in NearbyEnemiesIncludingFog and PossibleGankers (hero fixes H1)", function()
+    local Escape = require("lib.escape")
+    -- Vector stub with Distance2D (the file's base Vector stub lacks it). Both kernels call
+    -- pos:Distance2D(h.pos), so only the query point needs the method.
+    local function Vec(x, y)
+        return { x = x, y = y, z = 0,
+                 Distance2D = function(self, o)
+                     local dx, dy = self.x - o.x, self.y - o.y
+                     return math.sqrt(dx * dx + dy * dy)
+                 end }
+    end
+    local ME, O = {}, Vec(0, 0)
+    -- A fogged row as FogSnapshot builds it: probable_radius = age * 700 (lib/escape.lua:871).
+    local function ghost(tag, x, age)
+        return { entity = tag, pos = Vec(x, 0), age = age, probable_radius = age * 700, visible = false }
+    end
+    local function snap(heroes) return { t = 0, heroes = heroes } end
+    local function row(list, tag)
+        for i = 1, #list do if list[i].entity == tag then return list[i] end end
+    end
+    local function near(a, b) return math.abs(a - b) < 1e-6 end
+    -- Literal expectations only: { age_cap = nil } builds the same table as no field at all,
+    -- so comparing a capped call against a second call could never fail.
+    local S1 = snap({ ghost("stale", 3000, 10), ghost("fresh", 2500, 2), ghost("lurker", 1000, 10) })
+    local S3 = snap({ ghost("far", 5000, 10), ghost("mid", 2500, 3),
+                      ghost("lurker", 500, 10), ghost("edge", 4000, 5) })
+
+    it("H1-1 PossibleGankers: the stale ghost leaves, the fresh ghost and the near lurker stay", function()
+        local un = Escape.PossibleGankers(ME, O, 2, { max_ms = 700, snapshot = S1 })
+        assert_eq(un.summary.count, 3, "uncapped count")
+        assert_eq(row(un.gankers, "stale").eta_seconds, 0, "uncapped stale eta")
+        assert_eq(row(un.gankers, "lurker").eta_seconds, 0, "uncapped lurker eta")
+        local cap = Escape.PossibleGankers(ME, O, 2, { max_ms = 700, snapshot = S1, age_cap = 5 })
+        assert_eq(cap.summary.count, 2, "capped count")
+        assert_eq(row(cap.gankers, "stale"), nil, "capped stale ghost must leave (3000/700 = 4.29s > 2s)")
+        assert_true(near(row(cap.gankers, "fresh").eta_seconds, 2500 / 700 - 2), "capped fresh eta 1.57s")
+        assert_true(near(row(cap.gankers, "lurker").eta_seconds, 1000 / 700),
+            "capped lurker eta 1.43s (the drop rule would lose this enemy)")
+        assert_eq(row(cap.gankers, "lurker").age, 10, "output keeps the raw age")
+    end)
+
+    it("H1-2 PossibleGankers: age == cap keeps its disc; a visible row ignores its age field", function()
+        local vis = { entity = "vis", pos = Vec(1000, 0), age = 40, probable_radius = 0, visible = true }
+        local s = snap({ ghost("edge", 4000, 5), vis })
+        local cap = Escape.PossibleGankers(ME, O, 2, { max_ms = 700, snapshot = s, age_cap = 5 })
+        assert_eq(cap.summary.count, 2, "capped count")
+        assert_true(near(row(cap.gankers, "edge").eta_seconds, 4000 / 700 - 5),
+            "age == cap keeps the disc (0.71s); a >= test would give 5.71s and drop it")
+        assert_true(near(row(cap.gankers, "vis").eta_seconds, 1000 / 700), "visible row, capped call: 1.43s")
+        local un = Escape.PossibleGankers(ME, O, 2, { max_ms = 700, snapshot = s })
+        assert_true(near(row(un.gankers, "vis").eta_seconds, 1000 / 700), "visible row, uncapped call: 1.43s")
+    end)
+
+    it("H1-3 NearbyEnemiesIncludingFog: the far stale ghost leaves, age == cap stays, raw fields kept", function()
+        local v0, f0 = Escape.NearbyEnemiesIncludingFog(ME, O, 800, { snapshot = S3 })
+        assert_eq(v0, 0, "uncapped visible count")
+        assert_eq(f0, 4, "uncapped fog count")
+        local v1, f1, list = Escape.NearbyEnemiesIncludingFog(ME, O, 800, { snapshot = S3, age_cap = 5 })
+        assert_eq(v1, 0, "capped visible count")
+        assert_eq(f1, 3, "capped fog count")
+        assert_eq(row(list, "far"), nil, "aged 10 at 5000u: 5000 > 0 + 800")
+        assert_true(row(list, "mid") ~= nil, "aged 3 at 2500u: 2500 <= 2100 + 800")
+        assert_true(row(list, "edge") ~= nil, "aged 5 == cap at 4000u: 4000 <= 3500 + 800; >= would drop it")
+        local lurker = row(list, "lurker")
+        assert_eq(lurker.age, 10, "capped output keeps the raw age")
+        assert_eq(lurker.probable_radius, 7000, "capped output keeps the raw probable_radius")
+    end)
+
+    it("H1-4 pass-through: AdvanceRiskScore and GankImminent forward the cap", function()
+        assert_eq(Escape.AdvanceRiskScore(ME, O, { snapshot = S3 }), 60, "uncapped: 4 ghosts x 15")
+        assert_eq(Escape.AdvanceRiskScore(ME, O, { snapshot = S3, age_cap = 5 }), 45,
+            "capped: the 5000u ghost loses its +15")
+        local imm0, list0 = Escape.GankImminent(ME, O, 2, nil, { max_ms = 700, snapshot = S1 })
+        assert_true(imm0, "uncapped imminent")
+        assert_eq(#list0, 3, "uncapped list size")
+        assert_true(row(list0, "stale") ~= nil, "uncapped list holds the stale ghost")
+        local imm1, list1 = Escape.GankImminent(ME, O, 2, nil, { max_ms = 700, snapshot = S1, age_cap = 5 })
+        assert_true(imm1, "capped imminent: fresh + lurker still make 2")
+        assert_eq(#list1, 2, "capped list size")
+        assert_eq(row(list1, "stale"), nil, "capped list drops the stale ghost")
+    end)
+
+    it("H1-5 MissingFromMap ignores age_cap: long-missing enemies stay listed", function()
+        local m = Escape.MissingFromMap(ME, nil, { snapshot = S1, age_cap = 5 })
+        assert_eq(#m, 2, "both age-10 rows listed (the age-2 row is under the 5s threshold)")
+        assert_eq(m[1].age, 10, "first row age")
+        assert_eq(m[2].age, 10, "second row age")
+    end)
+end)
+
 local HV = require("lib.hero_value")
 
 describe("lib/hero_value -- FarmPriority", function()

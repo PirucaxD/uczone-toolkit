@@ -98,8 +98,8 @@ local Target = require("lib.target")
 ---state. KNOWN CEILING: the store also survives ACROSS matches in one client session, so
 ---a recycled entity handle can inherit a stale stamp (a LARGE age). Per consumer that
 ---cuts BOTH WAYS: FogProximityRisk SKIPS an enemy aged past its cap (LESS caution), while
----AdvanceRiskScore keeps a huge probable disc in reach and inflates the fog score (MORE
----caution for Lina's FC gates). Pre-merge, each script load began with an empty tracker.
+---AdvanceRiskScore keeps a huge disc (MORE caution) only for callers without opts.age_cap; one
+---passing it (Lina from v0.5.185) treats the stale stamp as age 0. Pre-merge, each script load began with an empty tracker.
 
 local Vision = {}
 
@@ -899,7 +899,7 @@ end
 ---@param me userdata defender / advancer entity (team-membership lookup only)
 ---@param pos userdata position to score around
 ---@param radius number engagement radius (e.g. 800 for Pike landing risk)
----@param opts table|nil {max_ms=700, now=fn, snapshot=table}
+---@param opts table|nil {max_ms=700, now=fn, snapshot=table, age_cap=nil} a fogged row older than age_cap counts from its last-seen spot with a zero disc; nil = no cap
 ---@return integer visible_count
 ---@return integer fog_count
 ---@return table list of {entity, last_pos, age, probable_radius, visible}
@@ -920,7 +920,7 @@ function Escape.NearbyEnemiesIncludingFog(me, pos, radius, opts)
                 }
             end
         else
-            if d <= h.probable_radius + radius then
+            if d <= ((opts.age_cap and (h.age or 0) > opts.age_cap) and 0 or h.probable_radius) + radius then
                 f_cnt = f_cnt + 1
                 out[#out + 1] = {
                     entity = h.entity, last_pos = h.pos,
@@ -1249,7 +1249,7 @@ end
 ---@param me userdata
 ---@param pos userdata position to evaluate (typically me's position or a candidate destination)
 ---@param eta_s number arrival horizon in seconds (gank-window)
----@param opts table|nil {max_ms=700, now=fn, snapshot=table}
+---@param opts table|nil {max_ms=700, now=fn, snapshot=table, age_cap=nil} a fogged row older than age_cap counts with age 0 (last-seen spot, no head start); nil = no cap
 ---@return table result {gankers={{entity, eta_seconds, dist, visibility, age}}, summary={count, soonest_eta, eta_s, max_ms}}
 function Escape.PossibleGankers(me, pos, eta_s, opts)
     if not (me and pos and eta_s) then
@@ -1268,7 +1268,7 @@ function Escape.PossibleGankers(me, pos, eta_s, opts)
         if h.visible then
             time_to_reach = d / max_ms
         else
-            time_to_reach = d / max_ms - h.age
+            time_to_reach = d / max_ms - ((opts.age_cap and (h.age or 0) > opts.age_cap) and 0 or h.age)
             if time_to_reach < 0 then time_to_reach = 0 end
         end
         if time_to_reach <= eta_s then
