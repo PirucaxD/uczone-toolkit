@@ -1561,7 +1561,7 @@ end
 ---FogProximityRisk's local d2 at :890 and ReachableFog at :784.
 ---@param snap table|nil FogSnapshot result { heroes = {{pos, age, visible}} }
 ---@param pt table|nil {x, y} plain table or engine Vector
----@param opts table|nil {fog_ms=550, age_cap=nil} disc-growth rate and stale-ghost cap, match FogProximityRisk
+---@param opts table|nil {fog_ms=550, age_cap=nil} disc-growth rate and stale-ghost drop cap, same rules as FogProximityRisk; nil = no cap (FogProximityRisk's default is 5)
 ---@return number edge distance in units, math.huge when there is nobody to measure
 function Escape.NearestEnemyEdge(snap, pt, opts)
     local hs = snap and snap.heroes

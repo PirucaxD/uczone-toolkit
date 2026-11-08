@@ -129,7 +129,8 @@ gate green. The anchor is `package.loaded` rather than `_G` because the
 scripting sandbox does not expose `_G`. Known ceiling: the store also survives
 across matches in one client session, so a recycled entity handle can inherit
 a stale stamp (a very large age). `FogProximityRisk` drops such a ghost at any
-`age_cap` below 30, including the default 5 (its snapshot age reads 30s);
+`age_cap` below 30, including the default 5 (its snapshot age reads 30s), and
+so does `NearestEnemyEdge` given such a cap (the `nil` default keeps it);
 `NearbyEnemiesIncludingFog`, `PossibleGankers` and the functions built on them
 treat it as able to be almost anywhere (more caution) unless the caller passes
 them an `age_cap` below 30 (see the fog section below).
@@ -195,8 +196,9 @@ and ETA tests change; returned rows keep the snapshot's raw `age` and
 `probable_radius`, and visible enemies are untouched. Every function whose
 `opts` reach these two applies it as well: `AdvanceRiskScore`, `SafestSpotNear`
 and `GankImminent` here, `ComputeAdvanceDest` and `BlinkInLanding` below. One
-`opts` table with an `age_cap`, given to `FogProximityRisk` and to any of these,
-applies both rules. `FogSnapshot` ignores the key, so `MissingFromMap` keeps
+`opts` table with an `age_cap`, given to `FogProximityRisk` (or to
+`NearestEnemyEdge`, which drops the same way) and to any of these, applies
+both rules. `FogSnapshot` ignores the key, so `MissingFromMap` keeps
 listing long-missing enemies. The cap only matters once `Escape.Vision` is wired
 (until then every fogged age is 0); pass the same value you give
 `FogProximityRisk` (default 5). `FogSnapshot` clamps ages at 30s, so on its
@@ -325,15 +327,15 @@ and this field fills that calibration hole. It returns `math.huge` on an empty
 snapshot so "no enemies" is distinguishable from "enemy at 0u". Component
 math on `.x` / `.y`, so plain `{x, y}` tables work as well as engine Vectors.
 
-By default (`opts.age_cap` nil) it carries no age cap, the original
-behaviour. That only reads well while every fogged row has age 0, i.e. before
+By default (`opts.age_cap` nil) it carries no age cap, so no enemy is
+dropped. That only reads well while every fogged row has age 0, i.e. before
 `Escape.Vision` is wired. Once Vision is wired the ages are real, and an
 uncapped stale ghost's disc (`age * fog_ms`, 16500u for a 30s ghost) covers
-the point from anywhere and zeroes the edge: tinker measured its `ne=` p50
-collapsing from ~1400 to 0. So if you wire Vision, pass `age_cap` (use the
+the point from almost anywhere and zeroes the edge: Tinker measured its `ne=`
+p50 collapsing from ~1400 to 0. So if you wire Vision, pass `age_cap` (use the
 same value you give `FogProximityRisk`, whose default is 5): a fogged enemy
-older than `age_cap` is then dropped entirely, the kernel's own drop rule,
-fresher ghosts keep the normal disc shrink, and visible enemies are never
+older than `age_cap` is then dropped entirely, as in `FogProximityRisk`, the
+other ghosts keep the normal disc shrink, and visible enemies are never
 dropped. If the cap drops every enemy the result is still `math.huge`.
 
 `DiagGate` is a keyed throttle for diagnostic log lines: it returns `true`
