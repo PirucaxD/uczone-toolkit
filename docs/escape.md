@@ -128,10 +128,11 @@ would stamp, and the others would read eternally-empty fog ages with every
 gate green. The anchor is `package.loaded` rather than `_G` because the
 scripting sandbox does not expose `_G`. Known ceiling: the store also survives
 across matches in one client session, so a recycled entity handle can inherit
-a stale stamp (a very large age). `FogProximityRisk` skips such a ghost (it is
-past its `age_cap`); `NearbyEnemiesIncludingFog`, `PossibleGankers` and the
-functions built on them treat it as able to be almost anywhere (more caution)
-unless the caller passes them an `age_cap` (see Fog and gank awareness below).
+a stale stamp (a very large age). `FogProximityRisk` drops such a ghost at any
+`age_cap` below 30, including the default 5 (its snapshot age reads 30s);
+`NearbyEnemiesIncludingFog`, `PossibleGankers` and the functions built on them
+treat it as able to be almost anywhere (more caution) unless the caller passes
+them an `age_cap` below 30 (see the fog section below).
 
 | Function | Returns |
 |----------|---------|
@@ -186,19 +187,20 @@ is recomputed here from age and `fog_ms` rather than read from the snapshot's
 The `opts` are `risk_radius` (default 1400), `fog_ms` (default 550), `fog_spread`
 (default 900), and `age_cap` (default 5), plus the usual `now` / `max_ms`.
 
-`NearbyEnemiesIncludingFog` and `PossibleGankers` take an opt-in `age_cap` too,
-with a different rule: a fogged enemy older than `age_cap` seconds is treated as
-age 0, judged from its last-seen spot with a zero disc and no head start, where
-`FogProximityRisk` would drop it. Only the reach and ETA tests change; returned
-rows keep the snapshot's raw `age` and `probable_radius`, and visible enemies
-are untouched. The default `nil` means no cap. Every function that passes its
-`opts` down applies it as well: `AdvanceRiskScore`, `SafestSpotNear` and
-`GankImminent` here, `ComputeAdvanceDest` and `BlinkInLanding` below.
-`FogSnapshot` does not, so `MissingFromMap` keeps listing long-missing enemies.
-One `opts` table passed to `FogProximityRisk` and to these applies both rules.
-The cap only matters once `Escape.Vision` is wired (until then every fogged age
-is 0); 5, `FogProximityRisk`'s default, is the usual value. Ages clamp at 30 s,
-so a cap of 30 or more never fires.
+`NearbyEnemiesIncludingFog` and `PossibleGankers` take an opt-in `age_cap`
+(default `nil`, no cap) with a different rule: a fogged enemy older than
+`age_cap` seconds is treated as age 0 at its last-seen spot (a zero disc, no ETA
+credit for time in fog), where `FogProximityRisk` would drop it. Only the reach
+and ETA tests change; returned rows keep the snapshot's raw `age` and
+`probable_radius`, and visible enemies are untouched. Every function whose
+`opts` reach these two applies it as well: `AdvanceRiskScore`, `SafestSpotNear`
+and `GankImminent` here, `ComputeAdvanceDest` and `BlinkInLanding` below. One
+`opts` table with an `age_cap`, given to `FogProximityRisk` and to any of these,
+applies both rules. `FogSnapshot` ignores the key, so `MissingFromMap` keeps
+listing long-missing enemies. The cap only matters once `Escape.Vision` is wired
+(until then every fogged age is 0); pass the same value you give
+`FogProximityRisk` (default 5). `FogSnapshot` clamps ages at 30s, so on its
+snapshots a cap of 30 or more never fires.
 
 ```lua
 local Escape = require("lib.escape")
